@@ -14,8 +14,9 @@ class EngineClient(ClientInterface.ClientInterface):
         :param path: The path to the engine
         :param move_time: The amount of time the engine has to move
         """
+        
         super().__init__(color)
-        self._engine = chess.engine.SimpleEngine.popen_uci(path)
+        self._engine = chess.engine.SimpleEngine.popen_uci('/home/pi/Stockfish/src/stockfish')
         self.move_time = move_time
 
     def __del__(self):

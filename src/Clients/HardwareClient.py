@@ -8,7 +8,10 @@ from time import sleep
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 from copy import deepcopy
+import serial
+import time
 
+ser = serial.Serial("/dev/ttyACM0", 9600, timeout=1)
 SLEEP_TIME = 0.5  # Time to sleep after every scan in seconds
 
 
@@ -59,7 +62,13 @@ class HardwareClient(ClientInterface.ClientInterface):
         self._flag_lock = Lock()
 
         self._hw_thread.start()
-
+        
+        ser.setDTR(False)
+        time.sleep(1)
+        ser.flushInput()
+        ser.setDTR(True)
+        time.sleep(2)
+    
     def __del__(self):
         """" Terminates hardware thread before deleting shared resources """
         with self._flag_lock:
@@ -141,12 +150,8 @@ class HardwareClient(ClientInterface.ClientInterface):
             client highlights the opponents move and any unexpected changes.
         """
 
-        if self.color == chess.WHITE:
-            self._hwi.display("White")
-        else:
-            self._hwi.display("Black")
-
         while not self.game_is_over():
+            print("In hw control loop")
             case = -1
             with self._board_lock:
                 if self._board.turn == self.color:
@@ -157,10 +162,14 @@ class HardwareClient(ClientInterface.ClientInterface):
 
             # Switch case
             if case == 0:
+                # Enter move through keyboard input
+                print("detecting move from player")
                 self._hw_detect_move_player()
             elif case == 1:
+                print("waiting for opponent to move")
                 self._hw_wait_move_opponent()
             elif case == 2:
+                print("playing opponent's move")
                 self._hw_play_move_opponent()
             else:
                 raise Exception("internal error")
@@ -177,49 +186,58 @@ class HardwareClient(ClientInterface.ClientInterface):
         """
         draw_offer = False
         while not self.game_is_over():
-            occupancy = self._hwi.get_occupancy()
-            diff = self._diff_occupancy_board(occupancy)
-            self._hwi.mark_squares(diff)
 
-            offers = self._hwi.game_end_offers()
+            offers = 0
             if offers is HardwareInterface.Offer.RESIGN:
                 self._resigned = True
                 return engine.PlayResult(None, None, resigned=True)
             if offers is HardwareInterface.Offer.DRAW:
                 draw_offer = True
+            
+            # add user input to move + logic for promotion 
+            # Detect all changed squares used to make program work in short term
+            print("starting square: ")
+            start = input()
+            startSquare =  chess.parse_square(start)
+            print("ending square: ")
+            end = input()
+            endSquare = chess.parse_square(end)
+            command = []
+            
+            
+            
+            
+            move = chess.Move(startSquare, endSquare)
+            move_is_legal = move in self._board.legal_moves
+            
+            if move_is_legal:
+                with self._board_lock:
+                    
+                    if self._board.piece_at(move.from_square).piece_type == chess.KNIGHT:
+                        command.append('n')
+                    elif self._board.piece_at(move.from_square).piece_type  == chess.KING:
+                        command.append('k')
+                    elif self._board.piece_at(move.from_square).piece_type  == chess.PAWN:
+                        command.append('p')
+                    else: command.append('_')
+            
+                    if self._board.piece_at(move.to_square)  == None:
+                        command.append('_')
+                    else: command.append('x')
+                    
+                    command.append(start)
+                    command.append(end)
+                    final_command = "".join(command)
+                    print("pushed to board " + final_command)
+                    ser.write(final_command.encode("utf-8"))
+                    
+                    self._board.push(move)
+                    sleep(8)
+                with self._playResult_lock:
+                    print("legal move played!")
+                    self._output_playResult = engine.PlayResult(move, None, draw_offered=draw_offer)
+                return
 
-            # Detect all changed squares
-            squares = []
-            for file in range(8):
-                for rank in range(8):
-                    if diff[file][rank]:
-                        squares.append(chess.square(file, rank))
-
-            if len(squares) == 2:  # Try to convert changed squares to legal move
-                with self._board_lock:  # Promotion not implemented
-                    if self._board.piece_at(squares[0]) is not None and \
-                            self._board.piece_at(squares[0]).color == self.color:
-                        move = chess.Move(squares[0], squares[1])
-                    elif self._board.piece_at(squares[1]) is not None and \
-                            self._board.piece_at(squares[1]).color == self.color:
-                        move = chess.Move(squares[1], squares[0])
-                    else:
-                        continue
-                    if self._board.piece_at(move.from_square).piece_type == chess.PAWN and \
-                            ((self.color == chess.WHITE and chess.square_rank(move.to_square) == 7) or
-                             (self.color == chess.BLACK and chess.square_rank(move.to_square) == 0)):
-                        move.promotion = chess.QUEEN
-                    move_is_legal = move in self._board.legal_moves  # save result to not use two locks
-                    if move_is_legal and move.promotion is not None:
-                        move.promotion = self._hwi.promotion_piece()
-
-                if move_is_legal:
-                    with self._board_lock:
-                        self._board.push(move)
-                    with self._playResult_lock:
-                        self._output_playResult = engine.PlayResult(move, None, draw_offered=draw_offer)
-                    return
-            self._update_display()
             sleep(SLEEP_TIME)
 
     def _hw_wait_move_opponent(self):
@@ -228,9 +246,7 @@ class HardwareClient(ClientInterface.ClientInterface):
             with self._playResult_lock:
                 if self._input_playResult is not None:
                     return
-            occupancy = self._hwi.get_occupancy()
-            self._hwi.mark_squares(self._diff_occupancy_board(occupancy))  # mark squares differing from expected states
-            self._update_display()
+
             sleep(SLEEP_TIME)
 
     def _hw_play_move_opponent(self):
@@ -239,94 +255,52 @@ class HardwareClient(ClientInterface.ClientInterface):
             # Deepcopy made to ensure thread safety
             move = deepcopy(self._input_playResult.move) if self._input_playResult.move is not None else None
             draw_offered = self._input_playResult.draw_offered
-
+        
+        #Add logic for oppenent move
+        # command string to send to arduino
+        command = []
+        startPosition = self._input_playResult.move.uci()[:2]
+        endPosition = self._input_playResult.move.uci()[2:]
+        
+        if self._board.piece_at(move.from_square).piece_type  == chess.KNIGHT:
+            command.append('n')
+        elif self._board.piece_at(move.from_square).piece_type  == chess.KING:
+            command.append('k')
+        else: command.append('p')
+        
+        print(startPosition + "    ")
+        print(endPosition)
+        
+        
         if move is None:
             return
 
         with self._board_lock:
             is_capture = self._board.is_capture(move)
-
+            
         while not self.game_is_over():
-            occupancy = self._hwi.get_occupancy()
-            if is_capture:  # Check if captured piece has been removed
-                if not _get_occupancy_square_from_matrix(occupancy, move.to_square):
-                    is_capture = False
-            else:
-                if (not _get_occupancy_square_from_matrix(occupancy, move.from_square)) \
-                        and _get_occupancy_square_from_matrix(occupancy, move.to_square):
-                    # If move has been completed update board and clear input field
-                    with self._board_lock:
-                        self._board.push(move)
-                    with self._playResult_lock:
-                        self._input_playResult = None
-                    temp = self._diff_occupancy_board(occupancy)
-                    self._hwi.mark_squares(temp)
+            if is_capture: # if there is a capture let terminal know
+                command.append('x')
+                print("piece at " + str(self._input_playResult.move) + " is being captured!")
+            if self._input_playResult is not None: # if there is a move to play, play it
+                if not is_capture: 
+                    command.append('_')
+                print("playing: ", self._input_playResult.move)
+                command.append(startPosition)
+                command.append(endPosition)
+                final_command = "".join(command)
+                print(final_command)
+                
+                ser.write(final_command.encode("utf-8"))
+                
+                self._input_playResult
+                with self._board_lock:
+                    self._board.push(move)
+                    sleep(4)
+                with self._playResult_lock:
+                    self._input_playResult = None
                     return
-
-            # If move has not been made on hw
-            diff = self._diff_occupancy_board(occupancy)  # find diff
-            diff[chess.square_file(move.from_square)][chess.square_rank(move.from_square)] = True  # And mark new move
-            diff[chess.square_file(move.to_square)][chess.square_rank(move.to_square)] = True
-
-            self._hwi.mark_squares(diff)  # Send marked squares to hardware
-            if draw_offered:
-                self._hwi.display("Draw offered")
-            else:
-                self._update_display()
+            
+        
             sleep(SLEEP_TIME)
 
-    def _diff_occupancy_board(self, occupancy: List[List[bool]]) -> List[List[bool]]:
-        """ Returns 8x8 matrix where result[i][j] == True indicates that square[i][j] is not in the expected state """
-        diff = [[False] * 8 for _ in range(8)]  # matrix with squares to mark
-        # Detect if hardware is in board position
-        for file in range(8):
-            for rank in range(8):
-                square = chess.square(file, rank)
-                with self._board_lock:
-                    if occupancy[file][rank] == (self._board.piece_at(square) is None):
-                        # If no piece at occupied square or piece at empty square mark diff as True
-                        diff[file][rank] = True
-        return diff
-
-    def _update_display(self):
-        """ Writes information to the display
-
-            In the first four moves the name of the players will be displayed from the metadata after that the clock
-            will be displayed
-        """
-        with self._time_lock:
-            time_set = self._white_time is not None and self._black_time is not None
-        meta_data_set = "white_name" in self.metadata and "black_name" in self.metadata
-        with self._board_lock:
-            early_game = len(self._board.move_stack) <= 4
-            color = self._board.turn
-        if meta_data_set and (early_game or not time_set):
-            self._hwi.display(self.metadata["white_name"] + "\n" + self.metadata["black_name"])
-        elif time_set:
-            with self._time_lock:
-                if color:
-                    self._white_time = self._last_move_made + self._white_time - datetime.now()
-                else:
-                    self._black_time = self._last_move_made + self._black_time - datetime.now()
-                self._last_move_made = datetime.now()
-
-                str_white = "White {minutes}:{seconds:02d}".format(
-                    minutes=int(self._white_time.seconds / 60),
-                    seconds=self._white_time.seconds % 60)
-                str_black = "Black {minutes}:{seconds:02d}".format(
-                    minutes=int(self._black_time.seconds / 60),
-                    seconds=self._black_time.seconds % 60)
-                self._hwi.display(str_white + "\n" + str_black)
-
-
-def _get_occupancy_square_from_matrix(occupancy_matrix: List[List[bool]], square: chess.Square) -> bool:
-    """ Check if square is occupied in occupancy matrix
-
-    A chess square (ie b3) has a file (b = file 1) and a rank (3 = file 2) now if square b3 is occupied
-    then in the occupancy matrix occupancy_matrix[1][2] = TRUE. In this case this method will return TRUE
-    otherwise the method will return false
-    :param occupancy_matrix: 8x8 matrix of booleans implemented as a 2d list.
-    :param square: The square to be checked
-    :return: TRUE iff square is occupied
-    """
-    return occupancy_matrix[chess.square_file(square)][chess.square_rank(square)]

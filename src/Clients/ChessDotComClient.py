@@ -15,7 +15,7 @@ class ChessDotComClient(ClientInterface.ClientInterface):
     _driver: webdriver
     color: chess.Color
 
-    def __init__(self, headless: bool = False, path_userdata: str = None):
+    def __init__(self, headless: bool = True, path_userdata: str = None):
         """ Starts the chess.com client.
 
         Using the chess.com client requires that chromedriver to be installed. Starting the client will open a new
