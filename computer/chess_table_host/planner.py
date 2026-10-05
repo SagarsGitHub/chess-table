@@ -38,6 +38,7 @@ class UnsupportedVariantError(PlanError):
 
 
 class PromotionPolicy(str, Enum):
+    PAWN_STAND_IN = "pawn_stand_in"
     MANUAL_REPLACEMENT = "manual_replacement"
     PARKED_PIECE = "parked_piece"
 
@@ -65,11 +66,14 @@ Location: TypeAlias = BoardSquare | ParkingSlot
 
 @dataclass(frozen=True)
 class Transfer:
-    """One ordered physical piece move; routes and motor commands come later.
+    """One ordered location transfer; routes and motor commands come later.
 
     ``piece`` uses python-chess symbols: uppercase is White, lowercase Black.
+    Standalone plans use the legal board symbol, which can differ from the
+    physical pawn standing in for a promoted piece. The game runner resolves
+    that difference before routing or committing a transfer.
     ``reason`` is one of move, capture, castle_king, castle_rook,
-    promotion_pawn, or promotion_piece.
+    promotion_stand_in, promotion_pawn, or promotion_piece.
     """
 
     piece: str
@@ -164,19 +168,22 @@ def plan_move(
     uci: str,
     parking: ParkingInventory,
     *,
-    promotion_policy: PromotionPolicy = PromotionPolicy.MANUAL_REPLACEMENT,
+    promotion_policy: PromotionPolicy = PromotionPolicy.PAWN_STAND_IN,
     slot_selector: SlotSelector | None = None,
 ) -> MovePlan:
     """Plan an ordered logical move without changing ``board`` or ``parking``.
 
     Captured pieces are transferred to the lowest numbered empty slot before
     the attacking piece moves. En passant removes the pawn from its actual
-    square. Castling emits separate king and rook transfers. A promotion either
-    requires a manual pawn replacement or takes a same-color piece already in
-    parking and parks the pawn. ``slot_selector`` may choose a physically
+    square. Castling emits separate king and rook transfers. By default, a
+    promoted pawn remains the same physical pawn while chess rules use the
+    selected promoted type. Explicit legacy policies can request a manual
+    replacement or a matching parked piece. ``slot_selector`` may choose a physically
     reachable empty slot based on its own occupancy and geometry model; it is
-    called with source, piece symbol, and the current immutable slot snapshot.
-    No motor route or acknowledgement is implied.
+    called with source, legal-board piece symbol, and the current immutable
+    slot snapshot. After a promotion, standalone transfer symbols and parking
+    inventory are logical drafts; GameRunner resolves the actual pawn token
+    before physical routing. No motor route or acknowledgement is implied.
     """
 
     if board.chess960:
@@ -226,7 +233,12 @@ def plan_move(
         )
     elif move.promotion:
         promoted = chess.Piece(move.promotion, board.turn).symbol()
-        if policy is PromotionPolicy.MANUAL_REPLACEMENT:
+        if policy is PromotionPolicy.PAWN_STAND_IN:
+            actions.append(
+                Transfer(mover.symbol(), _board_square(move.from_square),
+                         _board_square(move.to_square), "promotion_stand_in")
+            )
+        elif policy is PromotionPolicy.MANUAL_REPLACEMENT:
             actions.extend(
                 (
                     Transfer(mover.symbol(), _board_square(move.from_square), _board_square(move.to_square), "move"),

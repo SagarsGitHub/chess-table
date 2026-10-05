@@ -10,7 +10,7 @@ The target is a chess table that can complete a full game, park captured pieces 
 | 1. Hardware reliability | Identify and fix the magnet-release reset; verify relay supply, magnet suppression, grounding, and limits with the actual parts. Capture serial logs and wiring changes. | Homing and repeat loaded carries through the historical fixture positions finish without a boot/reset, unexpected limit, or lost piece, with logs recorded. |
 | 2. Reliable serial link | Add a version/capability handshake, request IDs, ACK/completion/fault messages, bounded timeouts, stop behavior, and restart detection. Keep one-byte bench stop. | Host and simulated Uno pass duplicate, malformed, busy, disconnect, reset, and stop cases. A timeout never silently commits a move. |
 | 3. General motion and parking | Implement square-to-square and arbitrary square-to-perimeter carry using route segments and known occupancy on the Uno. Model measured clearances and motion limits; reject a route that exceeds the compact 12-waypoint format. | Software route and simulator matrices pass. Later physical route runs cover all board regions and all 32 parking slots with repeatable pickup, delivery, and limit safety. Captures remove the victim first. |
-| 4. Game orchestration | Integrate legal-move plans with transport. Handle capture, en passant, castling, and promotion through a documented physical exchange policy. Persist game and parking inventory. Start with manual UCI input for human moves. | A complete local game can be played against a computer engine without running out of parking or losing board/slot agreement. Fault recovery is exercised mid-capture. |
+| 4. Game orchestration | Integrate legal-move plans with transport. Handle capture, en passant, castling, and promotion using the original pawn as the physical stand-in for the chosen legal piece. Persist game and parking inventory. Start with manual UCI input for human moves. | A complete local game can be played against a computer engine without running out of parking or losing board/slot agreement. A promoted pawn is tested through promotion, a later move, capture into parking, and checkpoint recovery. Fault recovery is exercised mid-capture. |
 | 5. Sensing and polish | Add or integrate physical piece detection if desired, then UI/clock/online features after the local game is stable. | Detected moves and mismatches are verified against legal state; regression and physical game logs are saved. |
 
 Stage 1 is tracked in [issue #1](https://github.com/SagarsGitHub/chess-table/issues/1). Stage 3 loaded hardware acceptance is tracked in [issue #2](https://github.com/SagarsGitHub/chess-table/issues/2).
@@ -21,9 +21,12 @@ Stage 1 is tracked in [issue #1](https://github.com/SagarsGitHub/chess-table/iss
 2. When stage 1 resumes, record the relay module, electromagnet supply/current, wiring, and a serial log around the reported release reset. Resolve it before claiming loaded reliability.
 3. Expand loaded routes across all board regions and 32 parking slots, then complete a local game against Stockfish and exercise mid-capture fault recovery.
 
+## Fixed promotion rule
+
+There are no spare queens, rooks, bishops, or knights for promotion. The pawn remains the physical piece on the board while the rules engine and Stockfish use the selected promoted type. Later moves carry that same pawn; capture parks it as a pawn. The game runner does not swap in a parked piece or request a manual replacement. Record both the legal and physical identities in game checkpoints and operator-facing state.
+
 ## Open design decisions
 
 - Confirm the actual electrical fix. The compact framed implementation now fits the user-selected Uno by retiring older diagnostics.
-- Choose the physical promotion inventory and human workflow: spare promoted pieces, manual exchange, or a separate rack. The logical planner must not imply that a pawn transforms physically.
 - Decide whether the first usable version relies on manual move entry/confirmation or new sensors. The imported hardware has no piece detection.
 - Confirm accessible slot spacing and collision clearance with real pieces, including occupied neighbors and parked pieces.

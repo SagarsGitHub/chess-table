@@ -52,6 +52,18 @@ software result, not a fixed slot assignment or physical clearance guarantee.
 The runner must show the planned route and chosen slot for operator review.
 If preflight fails, stop that ply before either piece moves.
 
+## Promotion rule for a longer game
+
+There are no spare promoted pieces. For a legal promotion such as a UCI move
+ending in `q`, `r`, `b`, or `n`, the table carries the pawn to the last rank and
+leaves that same physical pawn there. The game position and Stockfish treat it
+as the selected queen, rook, bishop, or knight. On later legal moves the table
+carries the pawn stand-in; if the promoted piece is captured, it parks that
+physical pawn. No replacement piece is taken from parking, and the operator
+does not exchange pieces by hand. After promotion and each later action,
+confirm both the legal piece shown in the game state and the actual pawn's
+location. On resume, reconcile the pawn stand-in with its recorded legal type.
+
 ## PowerShell commands
 
 Close the Arduino Serial Monitor before starting; only one program should use
@@ -133,7 +145,8 @@ pre-move board and parking inventory.
 Save the firmware/host commit, complete serial log (including resets), live
 `GEOM`, measured footprints and margin, FEN and parking inventory before and
 after each ply, chosen routes/slots, operator confirmations, and any observed
-reset or displacement. Stage 4 acceptance still requires a complete local
-game, tested special moves, and mid-capture recovery as described in
-[ROADMAP.md](ROADMAP.md). Loaded parking coverage remains tracked in
+reset or displacement. For a promotion, record the chosen legal type and the
+physical pawn's location through later movement or capture. Stage 4 acceptance
+still requires a complete local game, tested special moves, and mid-capture
+recovery as described in [ROADMAP.md](ROADMAP.md). Loaded parking coverage remains tracked in
 [issue #2](https://github.com/SagarsGitHub/chess-table/issues/2).

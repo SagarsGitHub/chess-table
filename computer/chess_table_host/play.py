@@ -150,6 +150,15 @@ def _show_physical_state(state: GameState) -> None:
     parked = [f"P{i:02d}={piece}" for i, piece in enumerate(state.physical_parking) if piece]
     print("Parking:", ", ".join(parked) if parked else "empty")
     print("Committed FEN:", state.board_fen)
+    logical = state.board()
+    stand_ins = [
+        f"{name}: physical {physical} represents logical {logical.piece_at(chess.parse_square(name)).symbol()}"
+        for name, physical in sorted(state.physical_squares.items())
+        if logical.piece_at(chess.parse_square(name)) is not None
+        and logical.piece_at(chess.parse_square(name)).symbol() != physical
+    ]
+    if stand_ins:
+        print("Promoted pawn stand-ins:", "; ".join(stand_ins))
     if state.pending:
         pending = state.pending
         print(f"Pending move: {pending.uci}, action {pending.next_action + 1}/"
@@ -292,7 +301,17 @@ def _print_plan(runner: GameRunner, uci: str, geometry: RouteGeometry) -> None:
     plan = runner.preflight_move(uci, geometry)
     print(f"Move {len(runner.state.moves) + 1}: {board.san(move)} ({plan.uci})")
     for index, action in enumerate(plan.actions, 1):
-        print(f"  {index}. {_describe_action(action)}")
+        description = _describe_action(action)
+        if isinstance(action, Transfer) and isinstance(action.source, BoardSquare):
+            logical = board.piece_at(chess.parse_square(action.source.name))
+            if logical is not None and logical.symbol() != action.piece:
+                description += f"; physical {action.piece} represents logical {logical.symbol()}"
+        print(f"  {index}. {description}")
+    if move.promotion:
+        promoted = chess.Piece(move.promotion, board.turn).symbol()
+        pawn = "P" if board.turn == chess.WHITE else "p"
+        print(f"  Promotion: the physical {pawn} remains at {chess.square_name(move.to_square)}; "
+              f"chess rules use {promoted}.")
 
 
 def _validate_script(runner: GameRunner, scripted: list[str]) -> None:
@@ -366,7 +385,7 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                     print("SIM CONFIRMED", _describe_action(action))
                     return True
                 if isinstance(action, ManualReplacement):
-                    print("Manually remove the pawn and place the promoted piece now.")
+                    raise GameStateError("manual promotion exchange is not allowed by this board design")
                 return _yes(f"Confirm physical action: {_describe_action(action)}?")
 
             try:

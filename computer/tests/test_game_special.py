@@ -135,36 +135,33 @@ class SpecialMoveTests(unittest.TestCase):
         self.assertEqual(runner.state.moves, ["e1g1"])
         self.assertIsNone(runner.state.pending)
 
-    def test_manual_promotion_waits_for_replacement_confirmation(self) -> None:
+    def test_promoted_pawn_waits_for_carry_confirmation(self) -> None:
         runner = self.runner_at("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
         before = runner.state.board_fen
         plan = runner.prepare_move("a7a8q", GEOMETRY)
         self.assertEqual(
             plan.actions,
             (
-                Transfer("P", BoardSquare("a7"), BoardSquare("a8"), "move"),
-                ManualReplacement(BoardSquare("a8"), "P", "Q"),
+                Transfer("P", BoardSquare("a7"), BoardSquare("a8"), "promotion_stand_in"),
             ),
         )
         link = FakeLink()
         with self.assertRaises(ReconciliationRequired):
-            runner.execute_pending(
-                link, GEOMETRY, lambda action: not isinstance(action, ManualReplacement)
-            )
+            runner.execute_pending(link, GEOMETRY, lambda action: False)
         saved = self.store.load()
         self.assertEqual(len(link.carries), 1)
         self.assertEqual(saved.board_fen, before)
         self.assertEqual(saved.moves, [])
-        self.assertEqual(saved.pending.next_action, 1)
+        self.assertEqual(saved.pending.next_action, 0)
         self.assertEqual(saved.pending.phase, "awaiting_confirmation")
-        self.assertIsNone(saved.pending.active_route)
-        self.assertEqual(saved.physical_squares["a8"], "P")
-        self.assertTrue(any(event["event"] == "manual_replacement_requested" for event in saved.events))
+        self.assertIsNotNone(saved.pending.active_route)
+        self.assertEqual(saved.physical_squares["a7"], "P")
+        self.assertNotIn("a8", saved.physical_squares)
 
-        # The operator has now physically replaced the pawn with a queen.
+        # The operator verifies the pawn reached a8; no replacement is needed.
         runner.resolve_uncertain_action("destination")
         self.assertIsNone(runner.state.pending)
-        self.assertEqual(runner.state.physical_squares["a8"], "Q")
+        self.assertEqual(runner.state.physical_squares["a8"], "P")
         self.assertEqual(chess.Board(runner.state.board_fen).piece_at(chess.A8), chess.Piece(chess.QUEEN, chess.WHITE))
         self.assertEqual(runner.state.moves, ["a7a8q"])
         self.assertEqual(len(link.carries), 1)

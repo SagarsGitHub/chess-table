@@ -7,7 +7,7 @@ temporary position between the victim and attacker legs of a capture.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Protocol
 import json
@@ -22,6 +22,7 @@ from .planner import (
     MovePlan,
     ParkingInventory,
     ParkingSlot,
+    PromotionPolicy,
     Transfer,
     plan_move,
 )
@@ -29,7 +30,8 @@ from .routing import CarryRoute, ReachableParkingSlotSelector, RouteGeometry, pl
 from .wire import encode_carry, encode_map
 
 
-STATE_VERSION = 2
+STATE_VERSION = 3
+PROMOTION_RULE = "pawn_stand_in"
 
 
 class GameStateError(ValueError):
@@ -51,6 +53,44 @@ class CarryLink(Protocol):
 
 def _board_pieces(board: chess.Board) -> dict[str, str]:
     return {chess.square_name(square): piece.symbol() for square, piece in board.piece_map().items()}
+
+
+def _replay_physical(initial_fen: str, moves: list[str]) -> tuple[chess.Board, dict[str, str]]:
+    """Replay legal moves while keeping a promoted pawn's physical identity."""
+    try:
+        board = chess.Board(initial_fen)
+        physical = _board_pieces(board)
+        for uci in moves:
+            move = board.parse_uci(uci)
+            source = chess.square_name(move.from_square)
+            destination = chess.square_name(move.to_square)
+            if board.is_capture(move):
+                victim_square = move.to_square
+                if board.is_en_passant(move):
+                    victim_square += -8 if board.turn == chess.WHITE else 8
+                victim = physical.pop(chess.square_name(victim_square), None)
+                if victim is None:
+                    raise GameStateError(f"physical capture victim missing for {uci}")
+            mover = physical.pop(source, None)
+            if mover is None:
+                raise GameStateError(f"physical mover missing for {uci}")
+            if board.is_castling(move):
+                rank = chess.square_rank(move.from_square)
+                rook_from = chess.square(7 if board.is_kingside_castling(move) else 0, rank)
+                rook_to = chess.square(5 if board.is_kingside_castling(move) else 3, rank)
+                rook = physical.pop(chess.square_name(rook_from), None)
+                if rook is None:
+                    raise GameStateError(f"physical castling rook missing for {uci}")
+                physical[chess.square_name(rook_to)] = rook
+            # On promotion, the pawn moves to the final rank unchanged. The
+            # logical board below records the selected Q/R/B/N role.
+            physical[destination] = mover
+            board.push(move)
+    except GameStateError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise GameStateError(f"invalid saved move history: {exc}") from exc
+    return board, physical
 
 
 def _location_to_json(location: BoardSquare | ParkingSlot) -> dict[str, object]:
@@ -208,15 +248,16 @@ class GameState:
 
     def board(self) -> chess.Board:
         """Rebuild the legal move stack, including repetition history."""
-        try:
-            board = chess.Board(self.initial_fen)
-            for uci in self.moves:
-                board.push(board.parse_uci(uci))
-        except (TypeError, ValueError) as exc:
-            raise GameStateError(f"invalid saved move history: {exc}") from exc
+        board, _ = _replay_physical(self.initial_fen, self.moves)
         if board.fen() != self.board_fen:
             raise GameStateError("saved FEN differs from replayed move history")
         return board
+
+    def expected_physical_squares(self) -> dict[str, str]:
+        board, physical = _replay_physical(self.initial_fen, self.moves)
+        if board.fen() != self.board_fen:
+            raise GameStateError("saved FEN differs from replayed move history")
+        return physical
 
     def validate(self) -> None:
         try:
@@ -232,7 +273,7 @@ class GameState:
         if not isinstance(self.moves, list) or any(not isinstance(move, str) for move in self.moves):
             raise GameStateError("invalid move history")
         if self.pending is None:
-            if (self.physical_squares != _board_pieces(board) or
+            if (self.physical_squares != self.expected_physical_squares() or
                     tuple(self.physical_parking) != self.committed_parking.slots):
                 raise GameStateError("physical snapshot differs from committed game")
             return
@@ -257,7 +298,7 @@ class GameState:
             raise GameStateError("pending UCI is illegal") from exc
         if expected.fen() != pending.fen_after:
             raise GameStateError("pending resulting FEN does not match legal move")
-        squares = _board_pieces(board)
+        squares = self.expected_physical_squares()
         slots = list(self.committed_parking.slots)
         for action in pending.actions[:pending.next_action]:
             _apply_action(squares, slots, action)
@@ -268,6 +309,7 @@ class GameState:
         self.validate()
         return {
             "version": STATE_VERSION,
+            "promotion_rule": PROMOTION_RULE,
             "initial_fen": self.initial_fen,
             "board_fen": self.board_fen,
             "committed_parking": list(self.committed_parking.slots),
@@ -280,9 +322,22 @@ class GameState:
 
     @classmethod
     def from_json(cls, value: object) -> GameState:
-        if not isinstance(value, dict) or value.get("version") != STATE_VERSION:
+        if not isinstance(value, dict) or value.get("version") not in {2, STATE_VERSION}:
             raise GameStateError("unsupported game-state version")
         try:
+            if value["version"] == STATE_VERSION and value.get("promotion_rule") != PROMOTION_RULE:
+                raise GameStateError("game-state promotion rule does not match pawn stand-in design")
+            if value["version"] == 2:
+                # v2 physically replaced promoted pawns. Those checkpoints
+                # cannot be silently interpreted under the stand-in rule.
+                history = list(value["moves"])
+                pending = value.get("pending")
+                if any(len(uci) == 5 for uci in history) or (
+                    pending is not None and len(pending.get("uci", "")) == 5
+                ):
+                    raise GameStateError(
+                        "version 2 promotion checkpoint needs manual reconciliation"
+                    )
             state = cls(
                 board_fen=value["board_fen"],
                 committed_parking=ParkingInventory(tuple(value["committed_parking"])),
@@ -338,23 +393,39 @@ class GameRunner:
             _occupied_squares(self.state.physical_squares),
             geometry=geometry, max_waypoints=12,
         )
-        plan = plan_move(
-            board, uci, self.state.committed_parking, slot_selector=selector
+        logical_plan = plan_move(
+            board, uci, self.state.committed_parking,
+            promotion_policy=PromotionPolicy.PAWN_STAND_IN,
+            slot_selector=selector,
         )
         squares = dict(self.state.physical_squares)
         slots = list(self.state.physical_parking)
-        for action in plan.actions:
+        physical_actions: list[Action] = []
+        for action in logical_plan.actions:
             if isinstance(action, Transfer):
+                physical_piece = _piece_at(squares, slots, action.source)
+                if physical_piece is None:
+                    raise GameStateError(f"planned transfer source is physically empty: {action.source}")
+                action = replace(action, piece=physical_piece)
                 plan_transfer_route(
                     action, occupied_squares=_occupied_squares(squares),
                     occupied_parking_slots=_occupied_slots(slots),
                     geometry=geometry, max_waypoints=12,
                 )
+            else:
+                raise GameStateError("game runner cannot require a spare promotion piece")
             _apply_action(squares, slots, action)
-        if (squares != _board_pieces(chess.Board(plan.fen_after)) or
-                tuple(slots) != plan.parking_after.slots):
+            physical_actions.append(action)
+        resulting_board, expected_physical = _replay_physical(
+            self.state.initial_fen, [*self.state.moves, logical_plan.uci]
+        )
+        if (resulting_board.fen() != logical_plan.fen_after or
+                squares != expected_physical):
             raise GameStateError("planned physical actions do not reach the legal position")
-        return plan
+        return replace(
+            logical_plan, actions=tuple(physical_actions),
+            parking_after=ParkingInventory(tuple(slots)),
+        )
 
     def prepare_move(self, uci: str, geometry: RouteGeometry) -> MovePlan:
         plan = self.preflight_move(uci, geometry)
@@ -455,7 +526,7 @@ class GameRunner:
         if self.state.pending is None:
             raise GameStateError("no pending move")
         uci = self.state.pending.uci
-        self.state.physical_squares = _board_pieces(chess.Board(self.state.board_fen))
+        self.state.physical_squares = self.state.expected_physical_squares()
         self.state.physical_parking = list(self.state.committed_parking.slots)
         self.state.pending = None
         self.state.events.append({"event": "move_aborted_after_manual_restore", "uci": uci})
@@ -465,7 +536,11 @@ class GameRunner:
         pending = self.state.pending
         if pending is None or pending.next_action < len(pending.actions):
             return
-        if (self.state.physical_squares != _board_pieces(chess.Board(pending.fen_after)) or
+        resulting_board, expected_physical = _replay_physical(
+            self.state.initial_fen, [*self.state.moves, pending.uci]
+        )
+        if (resulting_board.fen() != pending.fen_after or
+                self.state.physical_squares != expected_physical or
                 tuple(self.state.physical_parking) != pending.parking_after.slots):
             raise GameStateError("confirmed actions do not match planned final position")
         self.state.board_fen = pending.fen_after

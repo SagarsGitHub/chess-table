@@ -23,12 +23,12 @@ for action in plan.actions:
 
 Capture plans park the victim before moving the attacker. En passant parks the
 pawn from the square behind the destination. Castling moves the king and rook
-in separate steps. Promotion defaults to a `ManualReplacement` action that
-requires an operator to substitute a piece and confirm completion. With
-`promotion_policy=PromotionPolicy.PARKED_PIECE`, a matching same-color piece
-must already occupy a parking slot; the pawn is parked and the replacement
-piece is retrieved. Capturing moves and parked-piece promotion both require an
-empty slot, so planning fails explicitly if storage is full.
+in separate steps. On promotion, the pawn moves to the last rank and stays as
+the physical stand-in for the selected queen, rook, bishop, or knight. Chess
+rules and Stockfish use the selected type; later physical transfers still move
+the pawn. If that promoted piece is captured, its physical pawn is parked.
+There is no spare-piece exchange or retrieval from parking. A capture requires
+an empty parking slot, so planning fails explicitly if storage is full.
 
 ## Carry routing
 
@@ -57,14 +57,16 @@ and path tracking. An impossible clearance raises
 
 The default move planner selects the lowest empty slot. Pass a `slot_selector`
 callback to choose a reachable one; the callback gets the source square,
-piece symbol, and current immutable 32-slot snapshot. For one transfer,
+logical piece symbol, and current immutable 32-slot snapshot. The game runner
+converts each transfer to its physical pawn token before routing. For one transfer,
 `find_reachable_parking_slot()` tries free slots in order using the supplied
-occupancy and geometry. When a move has multiple parking actions, such as a
-capture followed by parked-piece promotion, create a fresh
+occupancy and geometry. For a capturing move, create a fresh
 `ReachableParkingSlotSelector(occupied_squares, geometry=...,
-max_waypoints=...)` for that `plan_move()` call. It advances the square
-occupancy between parking choices; the resulting plan still needs physical
-execution and acknowledgement before board state is committed.
+max_waypoints=...)` for that `plan_move()` call. The resulting plan still needs
+physical execution and acknowledgement before board state is committed.
+After a promotion, use the game runner for physical play: a standalone
+`plan_move()` draft does not have the physical stand-in history needed to
+identify a captured promoted pawn as a pawn in parking.
 
 ## Serial transport
 
@@ -93,6 +95,9 @@ An interrupted action is never replayed automatically; on resume the operator
 must inspect the board and choose whether the piece is at the source or
 destination (or restore the entire pre-move position). It asks for confirmation
 after every `DONE CARRY`, because the controller cannot sense piece placement.
+The checkpoint records the legal promoted type and the physical pawn stand-in
+separately. Operator review must follow the legal type for chess moves and
+verify that the pawn is the piece actually moved or parked.
 
 The checked-in [`config.json`](config.json) defaults to serial port `COM3`,
 Stockfish in `~/Documents/stockfish`, 18 mm moving and standing diameters, and
@@ -125,7 +130,9 @@ simulation, port discovery, physical smoke, and resume commands.
   reset investigation and hardware acceptance runs.
 - Game checkpoints and source/destination recovery rely on an operator's
   inspection. There is no camera or piece sensor to reconcile automatically.
-- Manual promotion requires a spare physical piece and manual handling of the
-  removed pawn. The parking inventory does not account for those manual items.
+- A promoted pawn looks like a pawn even though it moves under the selected
+  promoted piece's rules. The operator must use the displayed legal game state
+  when entering and confirming moves; there is no piece sensor to distinguish
+  the stand-in by sight.
 - The planner covers standard chess, not Chess960 castling. It records piece
   type and color per slot, not the identity of identical pieces.

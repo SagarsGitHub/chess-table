@@ -108,7 +108,10 @@ class PlannerTests(unittest.TestCase):
     def test_manual_promotion_has_explicit_operator_step(self) -> None:
         board = chess.Board("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
 
-        plan = plan_move(board, "a7a8q", ParkingInventory.empty())
+        plan = plan_move(
+            board, "a7a8q", ParkingInventory.empty(),
+            promotion_policy=PromotionPolicy.MANUAL_REPLACEMENT,
+        )
 
         self.assertEqual(
             plan.actions,
