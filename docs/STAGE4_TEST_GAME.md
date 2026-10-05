@@ -295,6 +295,13 @@ carry time, slip/wobble, neighboring displacement, relay behavior, and any
 limit fault, then repeat after the PTFE test. A simulator pass does not certify
 loaded motion on glass.
 
+Reset planning now tries a direct home transfer before using a temporary
+middle-board square. It prefers bishops and knights, then other back-rank
+pieces, then pawns. A pawn may still move first when returning a back-rank
+piece would block the only exit for another parked piece. On the next physical
+reset with mixed parked pieces, check the printed transfer order and count,
+and confirm that the final board and parking inventory are correct.
+
 ## Game checkpoint notes
 
 If you open a new WSL shell, set `physical_state` and `serial_port` again to

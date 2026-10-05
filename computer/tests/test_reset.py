@@ -16,7 +16,7 @@ import chess
 from chess_table_host.game import (
     GameRunner, GameState, GameStateError, JsonGameStore, ReconciliationRequired,
 )
-from chess_table_host.planner import ParkingInventory, ParkingSlot, Transfer
+from chess_table_host.planner import BoardSquare, ParkingInventory, ParkingSlot, Transfer
 from chess_table_host.play import SimulatedLink, _geometry_from_file, main
 from chess_table_host.routing import RouteGeometry
 
@@ -72,6 +72,56 @@ class ResetTests(unittest.TestCase):
     def test_already_standard_position_uses_no_carry(self) -> None:
         self.assertEqual(self.runner.prepare_reset(GEOMETRY), ())
         self.assert_start()
+
+    def test_misplaced_home_rank_rook_returns_directly_without_staging(self) -> None:
+        self.play("g1f3", "g8f6", "h1g1", "h8g8")
+        actions = self.runner.preflight_reset(GEOMETRY)
+        self.assertEqual(actions[0].source, BoardSquare("g1"))
+        self.assertEqual(actions[0].destination, BoardSquare("h1"))
+        self.assertEqual(actions[1].source, BoardSquare("g8"))
+        self.assertEqual(actions[1].destination, BoardSquare("h8"))
+        self.assertEqual(len(actions), 4)
+
+    def test_board_knight_returns_before_parked_pawn_when_exits_stay_open(self) -> None:
+        self.play("e2e4", "e7e5", "f1c4", "b8c6", "c4f7", "e8f7")
+        actions = self.runner.preflight_reset(GEOMETRY)
+        knight = next(index for index, action in enumerate(actions)
+                      if action.source == BoardSquare("c6") and action.destination == BoardSquare("b8"))
+        first_parked_pawn = next(index for index, action in enumerate(actions)
+                                 if isinstance(action.source, ParkingSlot) and action.piece.lower() == "p")
+        self.assertLess(knight, first_parked_pawn)
+
+    def test_parked_pawn_precedes_bishop_if_bishop_would_trap_its_exit(self) -> None:
+        self.play("e2e4", "e7e5", "f1c4", "b8c6", "c4f7", "e8f7")
+        actions = self.runner.preflight_reset(GEOMETRY)
+        parked = [action for action in actions if isinstance(action.source, ParkingSlot)]
+        self.assertEqual([action.piece for action in parked], ["p", "B"])
+
+    def test_parked_bishop_precedes_pawn_when_both_exits_are_open(self) -> None:
+        self.play("e2e4", "e7e5", "f1c4", "b8c6", "c4f7", "e8f7")
+        slots = self.runner.state.physical_parking
+        for index in range(len(slots)):
+            slots[index] = None
+        slots[20] = "p"
+        slots[23] = "B"
+        actions = self.runner.preflight_reset(GEOMETRY)
+        parked = [action for action in actions if isinstance(action.source, ParkingSlot)]
+        self.assertEqual([action.piece for action in parked], ["B", "p"])
+
+    def test_stage_pawn_blocker_so_knight_goes_home_in_one_carry(self) -> None:
+        # Physical arrangement of a home-square cycle. The remaining pieces
+        # keep the standard inventory while the open lanes permit reset routes.
+        squares = self.runner.state.physical_squares
+        squares["g1"], squares["h2"] = squares["h2"], squares["g1"]
+        squares["g4"] = squares.pop("g2")
+        squares["c4"] = squares.pop("f1")
+        actions = self.runner.preflight_reset(GEOMETRY)
+        knight_returns = [action for action in actions
+                          if action.piece == "N" and action.destination == BoardSquare("g1")]
+        self.assertEqual(len(knight_returns), 1)
+        self.assertEqual(knight_returns[0].source, BoardSquare("h2"))
+        self.assertEqual(actions[0].piece, "P")
+        self.assertEqual(actions[0].source, BoardSquare("g1"))
 
     def test_capture_reset_returns_parked_piece_and_checkpoints_each_transfer(self) -> None:
         self.play("e2e4", "d7d5", "e4d5")

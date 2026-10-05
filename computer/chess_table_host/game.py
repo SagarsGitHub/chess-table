@@ -593,9 +593,10 @@ class GameRunner:
     def preflight_reset(self, geometry: RouteGeometry) -> tuple[Transfer, ...]:
         """Route a full return to the standard setup before moving anything.
 
-        Wrong pieces on home ranks are staged in the middle. Occupied parking
-        slots must retain a vacant adjacent edge square until retrieved. This
-        also breaks square cycles without requiring a spare parking slot.
+        Return misplaced home-rank pieces directly when their homes are clear;
+        stage them only to break cycles or open a parking approach. Prioritize
+        bishops and knights, then other back-rank pieces, then pawns. Occupied
+        parking slots must retain a vacant adjacent edge square until retrieved.
         """
         if self.state.pending is not None:
             raise ReconciliationRequired("finish or reconcile the pending move before resetting")
@@ -616,6 +617,25 @@ class GameRunner:
             f"{file}{rank}" for rank in "3456" for file in "abcdefgh"
         )
 
+        def piece_priority(piece: str) -> int:
+            if piece.upper() in "BN":
+                return 0
+            if piece.upper() in "KQR":
+                return 1
+            return 2
+
+        def vacant_homes(piece: str, source: BoardSquare | ParkingSlot) -> list[str]:
+            source_point = location_point(source)
+            return sorted(
+                (name for name, symbol in target.items()
+                 if symbol == piece and name not in squares),
+                key=lambda name: (
+                    (location_point(BoardSquare(name)).x - source_point.x) ** 2 +
+                    (location_point(BoardSquare(name)).y - source_point.y) ** 2,
+                    name,
+                ),
+            )
+
         def try_transfer(source: BoardSquare | ParkingSlot, destination: BoardSquare) -> bool:
             piece = _piece_at(squares, slots, source)
             if piece is None or _piece_at(squares, slots, destination) is not None:
@@ -628,6 +648,23 @@ class GameRunner:
             _apply_action(squares, slots, transfer)
             actions.append(transfer)
             return True
+
+        def try_direct_home(name: str) -> bool:
+            if squares[name] == target.get(name):
+                return False
+            source = BoardSquare(name)
+            before = _accessible_parking(slots, squares)
+            for home in vacant_homes(squares[name], source):
+                destination = BoardSquare(home)
+                trial_squares = dict(squares)
+                trial_slots = list(slots)
+                _apply_action(trial_squares, trial_slots,
+                              Transfer(squares[name], source, destination, "reset_board"))
+                if not before.issubset(_accessible_parking(trial_slots, trial_squares)):
+                    continue
+                if try_transfer(source, destination):
+                    return True
+            return False
 
         def stage(source_name: str, *, opening: int | None = None) -> bool:
             source = BoardSquare(source_name)
@@ -656,11 +693,33 @@ class GameRunner:
                     return True
             return False
 
-        # Already-correct home pieces stay put unless they block a parked piece.
-        for name in sorted(tuple(squares)):
-            if name[1] in "1278" and squares[name] != target.get(name):
-                if not stage(name):
-                    raise NoRouteError(f"cannot stage {name} for board reset")
+        # Prefer a one-carry return over staging. Retry direct homes after each
+        # transfer because vacating one square can expose another piece's home.
+        # A direct return must not close an existing exit for a parked piece.
+        while True:
+            wrong_homes = sorted(
+                (name for name, piece in squares.items()
+                 if name[1] in "1278" and piece != target.get(name)),
+                key=lambda name: (piece_priority(squares[name]), name),
+            )
+            if not wrong_homes:
+                break
+            moved = False
+            for name in wrong_homes:
+                if try_direct_home(name):
+                    moved = True
+                    break
+            if moved:
+                continue
+            # If a cycle needs a temporary square, move the easier blocker
+            # first so an awkward piece can use its home in one carry.
+            for name in sorted(wrong_homes,
+                               key=lambda square: (-piece_priority(squares[square]), square)):
+                if stage(name):
+                    moved = True
+                    break
+            if not moved:
+                raise NoRouteError("cannot clear misplaced home-rank pieces for board reset")
 
         # A corner parking slot has only one board-side exit. Temporarily stage
         # whichever edge piece blocks an occupied slot before retrieval.
@@ -677,11 +736,24 @@ class GameRunner:
             ):
                 raise NoRouteError(f"cannot open an approach to parking slot {slot_id}")
 
+        # Return off-home back-rank pieces from the board before retrieving
+        # parked pawns. All occupied parking slots are accessible now, and
+        # each direct return must preserve every one of those exits.
+        while True:
+            candidates = sorted(
+                (name for name, piece in squares.items()
+                 if piece_priority(piece) < 2 and piece != target.get(name)),
+                key=lambda name: (piece_priority(squares[name]), name),
+            )
+            if not any(try_direct_home(name) for name in candidates):
+                break
+
         while any(slots):
             accessible = _accessible_parking(slots, squares)
             choices = sorted(
                 (index for index, piece in enumerate(slots) if piece is not None),
                 key=lambda index: (
+                    piece_priority(slots[index]),
                     sum(name not in squares for name in _parking_approaches(ParkingSlot(index))),
                     index,
                 ),
@@ -691,16 +763,7 @@ class GameRunner:
                 if index not in accessible:
                     continue
                 source = ParkingSlot(index)
-                source_point = location_point(source)
-                destinations = sorted(
-                    (name for name, symbol in target.items()
-                     if symbol == slots[index] and name not in squares),
-                    key=lambda name: (
-                        (location_point(BoardSquare(name)).x - source_point.x) ** 2 +
-                        (location_point(BoardSquare(name)).y - source_point.y) ** 2,
-                        name,
-                    ),
-                )
+                destinations = vacant_homes(slots[index], source)
                 for name in destinations:
                     destination = BoardSquare(name)
                     trial_squares = dict(squares)
@@ -721,21 +784,12 @@ class GameRunner:
 
         while squares != target:
             chosen = False
-            for name in sorted(tuple(squares)):
+            for name in sorted(tuple(squares),
+                               key=lambda square: (piece_priority(squares[square]), square)):
                 if squares[name] == target.get(name):
                     continue
                 source = BoardSquare(name)
-                source_point = location_point(source)
-                destinations = sorted(
-                    (home for home, symbol in target.items()
-                     if symbol == squares[name] and home not in squares),
-                    key=lambda home: (
-                        (location_point(BoardSquare(home)).x - source_point.x) ** 2 +
-                        (location_point(BoardSquare(home)).y - source_point.y) ** 2,
-                        home,
-                    ),
-                )
-                for home in destinations:
+                for home in vacant_homes(squares[name], source):
                     if try_transfer(source, BoardSquare(home)):
                         chosen = True
                         break
