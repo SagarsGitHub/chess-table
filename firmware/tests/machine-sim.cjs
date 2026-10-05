@@ -229,12 +229,12 @@ function carry(source, destination, encoded, timeout = 25000) {
   trackPiece = false;
   return id;
 }
-function checkLoadedProfile() {
-  // The d5-to-P00 fixture contains a 93.75 mm loaded horizontal leg.
-  // Measure the actual STEP pulse timing from the compiled firmware.
+function loadedAxisProfile(axis) {
+  // Measure the actual STEP pulse timing from the compiled firmware. Split
+  // waypoint legs at their dwell gaps, then inspect the longest loaded leg.
   const runs = [];
   let current = [];
-  for (const pulse of piecePulses[0]) {
+  for (const pulse of piecePulses[axis]) {
     if (current.length && (pulse.at - current.at(-1).at) / 16000 > 50) {
       runs.push(current); current = [];
     }
@@ -242,7 +242,7 @@ function checkLoadedProfile() {
   }
   if (current.length) runs.push(current);
   const longest = runs.reduce((a, b) => b.length > a.length ? b : a, []);
-  assert(longest.length > 10000, 'long loaded segment recorded');
+  assert(longest.length > 5000, 'long loaded segment recorded');
   function speedAt(index) {
     const halfWindow = 20;
     const pulseSpan = 2 * halfWindow;
@@ -250,11 +250,14 @@ function checkLoadedProfile() {
       longest[index - halfWindow].at) / 16000000;
     return pulseSpan * .0075 / seconds;
   }
-  const early = speedAt(133); // About 1 mm into the acceleration ramp.
-  const cruise = speedAt(4000);
+  return {early: speedAt(133), cruise: speedAt(4000)};
+}
+function checkLoadedProfile() {
+  // The d5-to-P00 fixture contains a 93.75 mm open horizontal leg.
+  const {early, cruise} = loadedAxisProfile(0);
   assert(early >= 23 && early <= 34, `loaded ramp near 1 mm: ${early} mm/s`);
-  assert(cruise >= 57 && cruise <= 63, `loaded cruise: ${cruise} mm/s`);
-  assert(cruise > early * 1.6, 'loaded carry accelerates gradually');
+  assert(cruise >= 47 && cruise <= 53, `loaded cruise: ${cruise} mm/s`);
+  assert(cruise > early * 1.4, 'loaded carry accelerates gradually');
 }
 function checkGeom() {
   const id = request('GEOM');
@@ -372,6 +375,30 @@ if (badStorage) {
   checkLoadedProfile();
   carry(64, 35, '00086879');
   console.log('PASS square-to-parking vector, gentler loaded profile, perimeter blocker, and retrieval');
+
+  // c5 and c4 stand on opposite sides of the horizontal grid lane y=8,
+  // x=6..0. That lane gets a 30 mm/s cap; otherwise the same route above uses
+  // 50 mm/s. One-sided adjacency also slows conservatively. A neighboring c4
+  // does not slow a vertical lane, and a diagonal remains at normal speed.
+  map([35, 34, 26]);
+  carry(35, 64, '79680800');
+  let profile = loadedAxisProfile(0);
+  assert(profile.early >= 17 && profile.early <= 27, `two-sided horizontal ramp: ${profile.early} mm/s`);
+  assert(profile.cruise >= 27 && profile.cruise <= 33, `two-sided horizontal cruise: ${profile.cruise} mm/s`);
+  map([35, 34]);
+  carry(35, 64, '79680800');
+  profile = loadedAxisProfile(0);
+  assert(profile.early >= 17 && profile.early <= 27, `tight horizontal ramp: ${profile.early} mm/s`);
+  assert(profile.cruise >= 27 && profile.cruise <= 33, `tight horizontal cruise: ${profile.cruise} mm/s`);
+  map([35, 26]);
+  carry(35, 18, '79686455');
+  profile = loadedAxisProfile(1);
+  assert(profile.cruise >= 47 && profile.cruise <= 53, `vertical cruise: ${profile.cruise} mm/s`);
+  map([35, 34]);
+  carry(35, 16, '79682415');
+  profile = loadedAxisProfile(0);
+  assert(profile.cruise >= 32 && profile.cruise <= 38, `diagonal axis cruise: ${profile.cruise} mm/s`);
+  console.log('PASS occupied horizontal lane slows to 30 mm/s; open, vertical, diagonal remain at 50 mm/s');
 
   // A 1 ms pulse during actual travel must not cancel; 10 ms during release
   // dwell is ignored even though it exceeds the movement threshold.

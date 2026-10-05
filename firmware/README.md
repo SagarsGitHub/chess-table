@@ -2,7 +2,7 @@
 
 Arduino Uno R3 / PlatformIO firmware for two M415B drivers, TR6x12 actuators,
 1/8 microstepping, four normally-open limit switches, and an active-HIGH magnet
-relay. Travel is 150 mm/s with the magnet off; carrying is 60 mm/s with
+relay. Travel is 150 mm/s with the magnet off; carrying is 50 mm/s with
 400 mm/s² acceleration. No motion
 starts at boot. The older one-letter motion and fixture commands were removed
 to fit general routes on the Uno; their implementation remains in Git history.
@@ -91,12 +91,16 @@ still stops it once motion begins. Commanded position and every waypoint must
 remain within the measured 2 mm software inset. A software stop is not a
 hardware emergency stop.
 
-For CARRY, the gentler profile applies after pickup. Empty carriage
-travel remains at 150 mm/s and 1000 mm/s²; HOME/REF use their separate seek
-and latch speeds. The 15-second watchdog applies to each segment, including
-the longest possible grid diagonal. Verify the gentler loaded profile with a
-short carry before a full physical game; the right setting depends on the
-piece/glass friction and magnetic grip.
+For CARRY, the 50 mm/s, 400 mm/s² loaded profile applies after pickup. A
+horizontal grid-to-grid segment next to any occupied board-square center in
+its X span uses 30 mm/s and 250 mm/s². The controller checks its occupancy
+map for each segment; it does not sense whether the neighboring piece actually
+moved. Vertical and diagonal legs keep the ordinary loaded profile. Empty
+carriage travel remains at 150 mm/s and 1000 mm/s²; HOME/REF use their separate
+seek and latch speeds. The 15-second watchdog applies to each segment,
+including the longest possible grid diagonal or crowded horizontal run.
+Verify both loaded profiles with short carries before a full physical game;
+the right settings depend on piece/glass friction and magnetic grip.
 
 The board pitch is 31.25 mm. a1 is nearest MIN/MIN; files increase in +X and
 ranks in +Y. Parking slots are perimeter grid intersections: P00..P08 bottom,

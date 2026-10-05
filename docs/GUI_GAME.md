@@ -7,6 +7,11 @@ the GUI and leave the pieces in place for the table to carry. A matched
 controller `DONE CARRY` advances the expected position in normal play. An
 uncertain transfer needs physical inspection and reconciliation.
 
+The parking view places all 32 labeled slots around an 8×8 board outline in a
+9×9 perimeter map. Board and parked pieces use SVG shapes over contrasting
+colors, and flipping the board also flips the parking view. These displays
+show checkpointed expected locations; they do not detect actual pieces.
+
 ## Start a simulated game
 
 Use the Coding checkout in Ubuntu WSL 2. Install dependencies in its Linux
@@ -77,6 +82,13 @@ configured tight-route fallback may route closer to occupied pieces than the
 travel limits, and the 12-waypoint bound. Watch neighboring pieces. Pass
 `--strict-clearance` to disable this fallback for a session.
 
+The updated Uno firmware carries at 50 mm/s and 400 mm/s², and slows a loaded
+horizontal grid segment beside occupied squares to 30 mm/s and 250 mm/s². It
+logs `tight piece mm/s=30.0` when that profile is selected. Flash the updated
+firmware before evaluating these speeds on the table; refreshing the GUI alone
+does not change motor timing. Stop the GUI server before flashing so it releases
+the serial port, then resume the same checkpoint.
+
 After stopping and closing the GUI server, resume the same physical checkpoint:
 
 ```bash
@@ -84,26 +96,34 @@ After stopping and closing the GUI server, resume the same physical checkpoint:
 ```
 
 The physical session observed on 2026-10-05 at `localhost:8765` uses
-`runs/gui-physical-20261005-152550.json` on `/dev/ttyACM0`. Its completed
-126-ply game ended in a draw, with 20 pieces parked. The older reset planner
-reported that retrieving the remaining parked pieces would trap a slot. It
-failed during full-plan preflight, before sending a reset `CARRY`; the saved
-board and parking inventory remain the source for the next attempt. To load
-the updated host code, stop that GUI server after it is idle, then restart it
-from WSL with the **same** checkpoint:
+`runs/gui-physical-20261005-152550.json` on `/dev/ttyACM0`. Its 126-ply game
+ended in a draw, with 20 pieces parked. The old planner rejected the first
+reset request in full-plan preflight, before sending a reset `CARRY`. The
+revised planner staged a parked piece to break the exit cycle. The user
+reports that the physical reset worked; the saved checkpoint now records
+`board_reset_completed` with `previous_plies: 126`, a fresh standard position,
+32 pieces on the board, and empty parking.
+
+The reset serial transcript records 32 `CARRY` requests and 31 `DONE CARRY`
+responses. One `@35 ERR MOTION` occurred after its last waypoint, followed by
+`!BOOT`, reconnection, reconciliation, and eventual reset completion. This is
+evidence of a completed physical reset with recovery, not a fault-free loaded
+run. The displayed state still needs comparison with the actual table because
+the checkpoint cannot sense pieces.
+
+To reopen this saved session after the current GUI server closes, use
+`--resume` from WSL:
 
 ```bash
 cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
 .venv/bin/python -m chess_table_host.gui --resume --state runs/gui-physical-20261005-152550.json --port /dev/ttyACM0 --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
 ```
 
-Compare the displayed expected board and all occupied parking slots with the
-table before requesting a loaded reset. Do not use `--new` for this position.
-The updated reset planner can temporarily stage a parked piece on an interior
-square to break a cycle of mutually blocked slot exits; it still preflights
-the complete return route before sending the first reset `CARRY`. A copy of
-this 126-ply checkpoint completed the 32-transfer reset in simulation, but
-the position still needs an observed physical reset.
+Use `--resume` for this existing checkpoint; `--new` requires a different
+filename. The completed 126-ply game is preserved in the pre-reset archive.
+Before a new physical game, compare the standard-position display and empty
+parking map with the actual pieces and slots. The reset planner preflights its
+full route before sending the first reset `CARRY`.
 
 ## Pause, recover, and reset
 
@@ -140,9 +160,9 @@ and reconciled before a reset can begin.
 
 ## Acceptance record to collect
 
-First run a simulated game through a result and test resume, captures,
-parking, castling, en passant, promotion stand-in, fault recovery, and reset.
-Then run and observe a physical GUI game and reset. Save the checkpoint,
-physical serial transcript, and notes on piece slip, neighboring movement,
-stops, and any reconciliation. Passing a simulated game does not complete
-the physical stage 4 acceptance or the deferred electrical diagnosis.
+The 126-ply physical game and recovered reset establish a completed
+game-and-reset path. Continue testing resume, captures, castling, en passant,
+promotion stand-in, midgame **End game & reset board**, and fault recovery.
+Save each checkpoint, physical serial transcript, and notes on piece slip,
+neighboring movement, stops, and reconciliation. A fault-free loaded run and
+the deferred electrical diagnosis remain open.

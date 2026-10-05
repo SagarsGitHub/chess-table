@@ -9,6 +9,32 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
+  <svg class="piece-definitions" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="piece-p" viewBox="0 0 64 64">
+      <g class="piece-shape"><circle cx="32" cy="18" r="8"/><path d="M25 29h14l4 19H21z"/><path d="M17 48h30l3 7H14z"/></g>
+    </symbol>
+    <symbol id="piece-r" viewBox="0 0 64 64">
+      <g class="piece-shape"><path d="M16 12h8v7h5v-7h6v7h5v-7h8v15H16z"/><path d="M22 27h20l3 21H19z"/><path d="M16 48h32l3 7H13z"/></g>
+      <path class="piece-detail" d="M21 29h22M23 43h18"/>
+    </symbol>
+    <symbol id="piece-n" viewBox="0 0 64 64">
+      <g class="piece-shape"><path d="M19 48c2-6 4-13 4-19l-7-4 4-8 12-5 10 4c6 5 8 12 5 19l-5 13z"/><path d="M16 48h32l3 7H13z"/></g>
+      <circle class="piece-eye" cx="34" cy="23" r="2.5"/>
+      <path class="piece-detail" d="M18 26l11 2m9 4c-2 5-6 8-10 10"/>
+    </symbol>
+    <symbol id="piece-b" viewBox="0 0 64 64">
+      <g class="piece-shape"><circle cx="32" cy="11" r="3"/><path d="M32 16c-8 3-13 10-13 18 0 6 4 11 7 14h12c3-3 7-8 7-14 0-8-5-15-13-18z"/><path d="M16 48h32l3 7H13z"/></g>
+      <path class="piece-detail" d="M39 25 26 40"/>
+    </symbol>
+    <symbol id="piece-q" viewBox="0 0 64 64">
+      <g class="piece-shape"><circle cx="13" cy="19" r="3"/><circle cx="23" cy="13" r="3"/><circle cx="32" cy="10" r="3"/><circle cx="41" cy="13" r="3"/><circle cx="51" cy="19" r="3"/><path d="m15 23 8 8 9-13 9 13 8-8-7 25H22z"/><path d="M17 48h30l3 7H14z"/></g>
+      <path class="piece-detail" d="M23 43h18"/>
+    </symbol>
+    <symbol id="piece-k" viewBox="0 0 64 64">
+      <g class="piece-shape"><path d="M29 8h6v7h7v6h-7v7h-6v-7h-7v-6h7z"/><path d="M24 29h16l4 19H20z"/><path d="M16 48h32l3 7H13z"/></g>
+      <path class="piece-detail" d="M24 35h16"/>
+    </symbol>
+  </svg>
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">
@@ -17,7 +43,7 @@
       </div>
       <div class="topbar-actions">
         <span id="connection" class="connection"><span class="connection-dot"></span>Connecting</span>
-        <button id="stop-button" class="button button-stop" type="button" title="Pauses after the current transfer; use the physical power cutoff for an immediate halt." disabled>Pause after transfer</button>
+        <button id="stop-button" class="button button-stop" type="button" title="Stop an active physical carry immediately; an interrupted carry needs inspection and reconciliation." disabled>Stop motion</button>
       </div>
     </header>
 
@@ -118,8 +144,9 @@
               <div><p class="section-kicker">03 / INVENTORY</p><h2 id="parking-heading">Piece parking</h2></div>
               <span id="parking-count" class="parking-count">0 / 32</span>
             </div>
-            <div id="parking" class="parking-grid" aria-label="Expected occupied parking slots"></div>
-            <p class="small-note">Slot contents come from the saved checkpoint.</p>
+            <div id="parking" class="parking-map" role="group" aria-label="Expected physical parking locations"></div>
+            <p id="parking-orientation" class="parking-orientation">White side at bottom · a-file on the left</p>
+            <p class="small-note">Slots follow the table perimeter. Contents come from the saved checkpoint, not piece sensors.</p>
           </section>
 
           <section class="panel history-panel" aria-labelledby="history-heading">

@@ -228,7 +228,7 @@ void BoardController::printGrid() {
     }
 }
 
-bool BoardController::moveTo(BoardPoint p, bool pieceProfile) {
+bool BoardController::moveTo(BoardPoint p, bool pieceProfile, bool tightHorizontal) {
     targets_[0] = lroundf(p.x * Config::PULSES_PER_MM);
     targets_[1] = lroundf(p.y * Config::PULSES_PER_MM);
     int32_t delta[2];
@@ -240,8 +240,10 @@ bool BoardController::moveTo(BoardPoint p, bool pieceProfile) {
     }
     const float dx = static_cast<float>(delta[0]), dy = static_cast<float>(delta[1]);
     const float length = sqrtf(dx * dx + dy * dy);
-    const float speed = pieceProfile ? Config::PIECE_SPEED_MM_PER_SEC : Config::TRAVEL_SPEED_MM_PER_SEC;
-    const float acceleration = pieceProfile ? Config::PIECE_ACCELERATION_MM_PER_SEC2 : Config::ACCELERATION_MM_PER_SEC2;
+    const float speed = tightHorizontal ? Config::TIGHT_HORIZONTAL_PIECE_SPEED_MM_PER_SEC :
+        pieceProfile ? Config::PIECE_SPEED_MM_PER_SEC : Config::TRAVEL_SPEED_MM_PER_SEC;
+    const float acceleration = tightHorizontal ? Config::TIGHT_HORIZONTAL_PIECE_ACCELERATION_MM_PER_SEC2 :
+        pieceProfile ? Config::PIECE_ACCELERATION_MM_PER_SEC2 : Config::ACCELERATION_MM_PER_SEC2;
     for (uint8_t i = 0; i < 2; ++i) {
         if (delta[i] == 0) continue;
         const float fraction = fabsf(static_cast<float>(delta[i])) / length;
@@ -251,7 +253,8 @@ bool BoardController::moveTo(BoardPoint p, bool pieceProfile) {
         }
     }
     Serial.print(F("Move X,Y (mm): ")); Serial.print(p.x, 3); Serial.print(','); Serial.print(p.y, 3);
-    Serial.print(pieceProfile ? F("; piece mm/s=") : F("; travel mm/s="));
+    Serial.print(tightHorizontal ? F("; tight piece mm/s=") :
+        pieceProfile ? F("; piece mm/s=") : F("; travel mm/s="));
     Serial.println(speed, 1);
     axes_[0]->resetBoardLimitFilter(); axes_[1]->resetBoardLimitFilter();
     bool accepted = true;
@@ -393,8 +396,25 @@ void BoardController::nextFixture() {
     if (!isActive()) fixtureMove_ = false;
 }
 
+bool BoardController::crowdedHorizontalSegment() const {
+    if (operation_ != Operation::CarryKnight || routeIndex_ == 0) return false;
+    const HalfSquarePoint a = route_[routeIndex_ - 1], b = route_[routeIndex_];
+    // Only magnet-on grid-to-grid horizontal travel uses this slower profile.
+    // Neighboring square centers one half-pitch above or below the lane can
+    // touch an 18 mm moving piece even though the route crosses no center.
+    if (a.y != b.y || a.x == b.x || (a.x & 1) || (b.x & 1) || (a.y & 1)) return false;
+    const int8_t left = a.x < b.x ? a.x : b.x;
+    const int8_t right = a.x > b.x ? a.x : b.x;
+    for (int8_t x = left + 1; x < right; x += 2) {
+        const uint8_t file = (x - 1) / 2;
+        if (a.y > 0 && pieces_.occupied(((a.y - 2) / 2) * 8 + file)) return true;
+        if (a.y < 16 && pieces_.occupied((a.y / 2) * 8 + file)) return true;
+    }
+    return false;
+}
+
 void BoardController::moveKnightPoint() {
-    moveTo(knightPoint(routeIndex_), routeIndex_ != 0);
+    moveTo(knightPoint(routeIndex_), routeIndex_ != 0, crowdedHorizontalSegment());
 }
 
 void BoardController::restoreProfiles() {

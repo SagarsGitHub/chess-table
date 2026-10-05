@@ -9,6 +9,10 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+.piece-definitions { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+.piece-shape { fill: var(--piece-fill); stroke: var(--piece-stroke); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.piece-detail { fill: none; stroke: var(--piece-detail); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+.piece-eye { fill: var(--piece-detail); }
 button, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .48; }
@@ -82,15 +86,16 @@ h1 { font-family: Georgia, Cambria, serif; font-size: clamp(35px, 4vw, 55px); li
 .square.is-drop-target { box-shadow: inset 0 0 0 5px #e5ad57; }
 .square:not(:disabled):hover { filter: brightness(1.07); }
 .square:disabled { cursor: default; opacity: 1; }
-.piece { position: relative; z-index: 1; font-family: "Segoe UI Symbol", "DejaVu Sans", Georgia, serif; font-size: clamp(32px, 5vw, 66px); line-height: 1; pointer-events: none; filter: drop-shadow(0 2px 1px #23312c55); }
-.piece.white { color: #fffdf4; -webkit-text-stroke: 1.3px #344b45; }
-.piece.black { color: #1b3030; -webkit-text-stroke: .6px #e3e8dc; }
+.piece-token { position: relative; z-index: 1; display: grid; place-items: center; width: 76%; height: 76%; border-radius: 15%; border: 1px solid; pointer-events: none; box-shadow: 0 2px 3px #1a302e38; }
+.piece-token.white { background: #d7b889; border-color: #f8ead0; --piece-fill: #fffaf0; --piece-stroke: #29423f; --piece-detail: #29423f; }
+.piece-token.black { background: #31534f; border-color: #b8d0bf; --piece-fill: #1b3533; --piece-stroke: #f0ebdc; --piece-detail: #f0ebdc; }
+.piece-icon { display: block; width: 83%; height: 83%; overflow: visible; filter: drop-shadow(0 1px 1px #152d2b44); }
 .square-coordinate { position: absolute; z-index: 2; left: 5px; bottom: 2px; font-size: clamp(8px, .9vw, 11px); font-weight: 800; pointer-events: none; }
 .square-rank { top: 3px; bottom: auto; }
 .stand-in { position: absolute; z-index: 3; right: 3px; bottom: 3px; width: 12px; height: 12px; border-radius: 50%; background: #e0a253; border: 2px solid #fff; pointer-events: none; }
 .board-footer { padding: 22px 25px 2px; display: flex; justify-content: space-between; align-items: center; gap: 14px; }
 .turn-indicator { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 700; }
-.turn-piece { display: grid; place-items: center; width: 29px; height: 29px; border-radius: 50%; background: #e9ede6; color: #223936; font-family: Georgia, serif; font-size: 24px; }
+.turn-piece { width: 29px; height: 29px; border-radius: 50%; flex: none; }
 .board-help { color: #7c8780; font-size: 12px; margin: 0; text-align: right; }
 .board-view-description { margin: 7px 25px 0; font-size: 11px; color: #647f71; font-weight: 700; }
 .disclosure { margin: 14px 25px 0; border-top: 1px solid #edf0e9; padding-top: 14px; font-size: 11px; color: #8b958d; }
@@ -121,13 +126,18 @@ h1 { font-family: Georgia, Cambria, serif; font-size: clamp(35px, 4vw, 55px); li
 .setup-details p { margin: 10px 0 0; line-height: 1.45; color: #89968b; }
 
 .parking-count, .history-count { background: #eff2ed; border-radius: 25px; color: #567264; font-size: 11px; font-weight: 800; padding: 6px 10px; white-space: nowrap; }
-.parking-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 5px; margin: 0 25px; }
-.parking-slot { position: relative; aspect-ratio: 1; display: grid; place-items: center; border-radius: 7px; border: 1px dashed #d6dfd4; background: #f7f8f3; color: #91a095; }
-.parking-slot.occupied { border-style: solid; border-color: #bed0bd; background: #e8eee6; }
-.parking-slot b { position: relative; top: -2px; font-family: "Segoe UI Symbol", Georgia, serif; font-size: clamp(20px, 2vw, 31px); font-weight: 400; }
-.parking-slot b.white { color: #fff; -webkit-text-stroke: 1px #3a564d; }
-.parking-slot b.black { color: #263c39; }
-.parking-slot small { position: absolute; bottom: 2px; right: 3px; font-size: 8px; font-weight: 800; }
+.parking-map { position: relative; isolation: isolate; display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); grid-template-rows: repeat(9, minmax(0, 1fr)); width: calc(100% - 50px); max-width: 430px; aspect-ratio: 1; margin: 0 auto; }
+.parking-surface { position: absolute; inset: 5.5556%; display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr); overflow: hidden; border: 2px solid #25403f; border-radius: 3px; box-shadow: 0 4px 12px #203a3440; }
+.parking-mini-square.light { background: #e7e6d6; }
+.parking-mini-square.dark { background: #6d8980; }
+.parking-surface-label { position: absolute; z-index: 1; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 5px 7px; border-radius: 4px; background: #f8f7e9dd; color: #415e54; font-size: 9px; font-weight: 850; letter-spacing: .08em; white-space: nowrap; }
+.parking-slot { position: relative; z-index: 2; align-self: center; justify-self: center; display: grid; place-items: center; width: calc(100% - 2px); height: calc(100% - 2px); min-width: 0; min-height: 0; border-radius: 7px; border: 1px dashed #a8b9ac; background: #f7f8f3; color: #5d7167; box-shadow: 0 1px 3px #213b3433; }
+.parking-slot.occupied { border-style: solid; }
+.parking-slot.occupied.white { border-color: #f8ead0; background: #d7b889; --piece-fill: #fffaf0; --piece-stroke: #29423f; --piece-detail: #29423f; color: #253c38; }
+.parking-slot.occupied.black { border-color: #b8d0bf; background: #31534f; --piece-fill: #1b3533; --piece-stroke: #f0ebdc; --piece-detail: #f0ebdc; color: #f2f3e9; }
+.parking-slot .piece-icon { width: 82%; height: 82%; margin-top: -4px; }
+.parking-slot small { position: absolute; bottom: 2px; right: 3px; font-size: 8px; font-weight: 850; line-height: 1; }
+.parking-orientation { margin: 13px 25px 0; color: #516e62; font-size: 11px; font-weight: 750; text-align: center; }
 .small-note { margin: 13px 25px 0; font-size: 11px; color: #929e94; }
 
 .history-list { max-height: 266px; overflow-y: auto; margin: 0 25px; border-top: 1px solid #eff1eb; }
@@ -157,7 +167,7 @@ h1 { font-family: Georgia, Cambria, serif; font-size: clamp(35px, 4vw, 55px); li
 .promotion-options { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 22px 0 18px; }
 .promotion-choice { border: 1px solid #ccd8cd; border-radius: 10px; padding: 9px 4px; background: #eef3ea; display: grid; justify-items: center; color: #334b42; }
 .promotion-choice:hover { background: #e2ece0; }
-.promotion-choice b { font-family: "Segoe UI Symbol", Georgia, serif; font-size: 37px; font-weight: 400; line-height: 1.1; }
+.promotion-token { width: 52px; height: 52px; margin: 0 auto 5px; }
 .promotion-choice small { font-size: 11px; font-weight: 700; }
 
 @media (max-width: 1080px) {
@@ -168,14 +178,15 @@ h1 { font-family: Georgia, Cambria, serif; font-size: clamp(35px, 4vw, 55px); li
   .board-frame { padding: 0 18px; }
   .board-footer { padding: 19px 18px 0; }
   .board-view-description, .disclosure { margin-left: 18px; margin-right: 18px; }
-  .session-status, .transfer-status, .session-start, .session-live, .connection-detail, .setup-details, .parking-grid, .small-note, .history-list, .recovery-detail, .recovery-action, .recovery-instruction, .inspection-check, .recovery-options { margin-left: 18px; margin-right: 18px; }
+  .session-status, .transfer-status, .session-start, .session-live, .connection-detail, .setup-details, .small-note, .history-list, .recovery-detail, .recovery-action, .recovery-instruction, .inspection-check, .recovery-options { margin-left: 18px; margin-right: 18px; }
+  .parking-map { width: calc(100% - 36px); }
+  .parking-orientation { margin-left: 18px; margin-right: 18px; }
 }
 @media (max-width: 790px) {
   .workspace { grid-template-columns: 1fr; }
   .sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .recovery-panel { grid-column: 1 / -1; }
   .board { max-width: 630px; }
-  .piece { font-size: clamp(34px, 8vw, 64px); }
 }
 @media (max-width: 560px) {
   .topbar { min-height: 68px; }
@@ -200,7 +211,7 @@ h1 { font-family: Georgia, Cambria, serif; font-size: clamp(35px, 4vw, 55px); li
   .square-coordinate { left: 2px; bottom: 1px; }
   .square-rank { top: 1px; bottom: auto; }
   .stand-in { width: 9px; height: 9px; right: 1px; bottom: 1px; }
-  .parking-slot b { font-size: 25px; }
+  .parking-slot small { font-size: 7px; right: 2px; bottom: 1px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .button { transition: none; }

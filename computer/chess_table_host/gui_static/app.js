@@ -1,6 +1,5 @@
 "use strict";
 
-const PIECE_GLYPHS = { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" };
 const PIECE_NAMES = { k: "king", q: "queen", r: "rook", b: "bishop", n: "knight", p: "pawn" };
 const PROMOTION_NAMES = { q: "Queen", r: "Rook", b: "Bishop", n: "Knight" };
 const FILES = "abcdefgh";
@@ -12,6 +11,7 @@ const els = Object.fromEntries([
   "hardware-mode", "stop-button", "flip-button", "phase-tag", "session-status",
   "session-start", "session-live", "mode-select", "start-button", "active-mode",
   "move-count", "reset-button", "connection-detail", "parking", "parking-count",
+  "parking-orientation",
   "transfer-status", "transfer-progress", "transfer-action", "transfer-route",
   "history", "history-count", "recovery-panel", "recovery-detail", "recovery-action",
   "inspected", "promotion-dialog", "promotion-options", "promotion-cancel", "setup-summary",
@@ -29,6 +29,7 @@ let localError = "";
 let previousBoardSignature = "";
 let previousRecoverySignature = "";
 let previousHistorySignature = "";
+let previousParkingSignature = "";
 let promotionMoves = [];
 let pollInFlight = false;
 
@@ -107,7 +108,7 @@ function parseFen(fen) {
     let file = 0;
     for (const char of ranks[row]) {
       if (/[1-8]/.test(char)) file += Number(char);
-      else if (PIECE_GLYPHS[char.toLowerCase()] && file < 8) {
+      else if (PIECE_NAMES[char.toLowerCase()] && file < 8) {
         map[`${FILES[file]}${8 - row}`] = char;
         file += 1;
       }
@@ -203,9 +204,7 @@ function renderStatus() {
   els["phase-tag"].classList.toggle("is-alert", needsReconciliation() || Boolean(state.error));
   els["session-status"].textContent = typeof state.status === "string" && state.status ? state.status : headline;
   els["turn-indicator"].replaceChildren();
-  const icon = document.createElement("span");
-  icon.className = "turn-piece";
-  icon.textContent = turn === "White" ? "♙" : "♟";
+  const icon = pieceToken(turn === "White" ? "P" : "p", "turn-piece");
   const description = document.createElement("span");
   description.textContent = phase === "game_over" ? gameResult(result) : `${turn} to move`;
   els["turn-indicator"].append(icon, description);
@@ -225,6 +224,27 @@ function boardSignature() {
 
 function pieceDescription(symbol) {
   return `${symbol === symbol.toUpperCase() ? "white" : "black"} ${PIECE_NAMES[symbol.toLowerCase()] || "piece"}`;
+}
+
+function pieceIcon(symbol) {
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.classList.add("piece-icon");
+  icon.setAttribute("viewBox", "0 0 64 64");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+  const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+  use.setAttribute("href", `#piece-${symbol.toLowerCase()}`);
+  icon.append(use);
+  return icon;
+}
+
+function pieceToken(symbol, extraClass = "") {
+  const side = symbol === symbol.toUpperCase() ? "white" : "black";
+  const token = document.createElement("span");
+  token.className = `piece-token ${side}${extraClass ? ` ${extraClass}` : ""}`;
+  token.setAttribute("aria-hidden", "true");
+  token.append(pieceIcon(symbol));
+  return token;
 }
 
 function renderBoard() {
@@ -259,11 +279,7 @@ function renderBoard() {
       if (lastMove && (lastMove.slice(0, 2) === square || lastMove.slice(2, 4) === square)) button.classList.add("is-last");
       if (symbol) {
         button.classList.add("has-piece");
-        const piece = document.createElement("span");
-        piece.className = `piece ${symbol === symbol.toUpperCase() ? "white" : "black"}`;
-        piece.setAttribute("aria-hidden", "true");
-        piece.textContent = PIECE_GLYPHS[symbol.toLowerCase()];
-        button.append(piece);
+        button.append(pieceToken(symbol));
         button.draggable = canMove() && moves.some(move => move.slice(0, 2) === square);
         const physicalPawnStandIn = physical[square]?.toLowerCase() === "p" && logical[square]
           && logical[square].toLowerCase() !== "p" &&
@@ -371,29 +387,75 @@ function renderSetup() {
   els["setup-summary"].replaceChildren(fragment);
 }
 
+function parkingLocation(slot) {
+  if (slot === 0) return "by a1 corner";
+  if (slot === 8) return "by h1 corner";
+  if (slot === 9) return "by a8 corner";
+  if (slot === 17) return "by h8 corner";
+  if (slot < 9) return `between ${FILES[slot - 1]}1 and ${FILES[slot]}1`;
+  if (slot < 18) return `between ${FILES[slot - 10]}8 and ${FILES[slot - 9]}8`;
+  if (slot < 25) return `between a${slot - 17} and a${slot - 16}`;
+  return `between h${slot - 24} and h${slot - 23}`;
+}
+
+function parkingGridPosition(slot) {
+  let column;
+  let row;
+  if (slot < 9) { column = slot + 1; row = 9; }
+  else if (slot < 18) { column = slot - 8; row = 1; }
+  else if (slot < 25) { column = 1; row = 26 - slot; }
+  else { column = 9; row = 33 - slot; }
+  return whiteAtBottom ? [column, row] : [10 - column, 10 - row];
+}
+
 function renderParking() {
   const slots = Array.isArray(state.physical_parking) ? state.physical_parking : [];
-  let occupied = 0;
+  const signature = JSON.stringify([slots, whiteAtBottom]);
+  if (signature === previousParkingSignature) return;
+  previousParkingSignature = signature;
   const fragment = document.createDocumentFragment();
-  for (let i = 0; i < 32; i++) {
-    const symbol = slots[i];
+  const surface = document.createElement("div");
+  surface.className = "parking-surface";
+  surface.setAttribute("aria-hidden", "true");
+  for (let row = 0; row < 8; row++) {
+    for (let column = 0; column < 8; column++) {
+      const square = document.createElement("span");
+      square.className = `parking-mini-square ${(row + column) % 2 ? "dark" : "light"}`;
+      surface.append(square);
+    }
+  }
+  const surfaceLabel = document.createElement("span");
+  surfaceLabel.className = "parking-surface-label";
+  surfaceLabel.textContent = "PLAYING SURFACE";
+  surface.append(surfaceLabel);
+  fragment.append(surface);
+  let occupied = 0;
+  for (let slot = 0; slot < 32; slot++) {
+    const symbol = slots[slot];
+    const id = `P${String(slot).padStart(2, "0")}`;
+    const description = `${id}, ${parkingLocation(slot)}: ${symbol ? pieceDescription(symbol) : "empty"}`;
+    const [column, row] = parkingGridPosition(slot);
     const cell = document.createElement("div");
-    cell.className = `parking-slot${symbol ? " occupied" : ""}`;
-    cell.setAttribute("aria-label", `P${String(i).padStart(2, "0")}: ${symbol ? pieceDescription(symbol) : "empty"}`);
+    cell.className = `parking-slot${symbol ? ` occupied ${symbol === symbol.toUpperCase() ? "white" : "black"}` : ""}`;
+    cell.style.gridColumn = String(column);
+    cell.style.gridRow = String(row);
+    cell.setAttribute("role", "img");
+    cell.setAttribute("aria-label", description);
+    cell.title = description;
     if (symbol) {
       occupied += 1;
-      const piece = document.createElement("b");
-      piece.className = symbol === symbol.toUpperCase() ? "white" : "black";
-      piece.setAttribute("aria-hidden", "true");
-      piece.textContent = PIECE_GLYPHS[symbol.toLowerCase()] || "?";
-      cell.append(piece);
+      cell.append(pieceIcon(symbol));
     }
     const number = document.createElement("small");
-    number.textContent = String(i).padStart(2, "0");
+    number.textContent = id;
     cell.append(number);
     fragment.append(cell);
   }
   els.parking.replaceChildren(fragment);
+  els.parking.setAttribute("aria-label", `Expected physical parking locations, ${whiteAtBottom ? "White" : "Black"} side at bottom`);
+  els["parking-orientation"].textContent = whiteAtBottom
+    ? "White side at bottom · a-file on the left"
+    : "Black side at bottom · h-file on the left";
   els["parking-count"].textContent = `${occupied} / 32`;
 }
 
@@ -489,8 +551,7 @@ function renderPromotionDialog() {
     button.type = "button";
     button.className = "promotion-choice";
     button.dataset.move = move;
-    const glyph = document.createElement("b");
-    glyph.textContent = PIECE_GLYPHS[role];
+    const glyph = pieceToken(state.turn === "black" ? role : role.toUpperCase(), "promotion-token");
     const label = document.createElement("small");
     label.textContent = PROMOTION_NAMES[role];
     button.append(glyph, label);
@@ -574,6 +635,7 @@ els["flip-button"].addEventListener("click", () => {
   whiteAtBottom = !whiteAtBottom;
   previousBoardSignature = "";
   renderBoard();
+  renderParking();
 });
 els["view-physical"].addEventListener("click", () => {
   viewOverride = true;

@@ -49,10 +49,11 @@ private:
     void waitForRelease();
     bool preflight();
     bool inside(uint8_t axis, int32_t pulses) const;
-    bool moveTo(BoardPoint point, bool pieceProfile);
+    bool moveTo(BoardPoint point, bool pieceProfile, bool tightHorizontal = false);
     void moveSquare(uint8_t file, uint8_t rank);
     void moveWalkSquare();
     void moveKnightPoint();
+    bool crowdedHorizontalSegment() const;
     BoardPoint knightPoint(uint8_t index) const;
     BoardPoint routePoint(HalfSquarePoint point) const;
     void startRoute(bool carry, uint8_t source, uint8_t destination);
