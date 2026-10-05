@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import chess
+
 from chess_table_host.game import GameRunner, GameState, GameStateError, JsonGameStore, MoveDeferred
 from chess_table_host.play import (
     DEFAULT_CONFIG, LoggedSerialStream, SimulatedLink, _geometry_from_file, _load_config,
@@ -15,6 +17,75 @@ from chess_table_host.play import (
 
 
 class PlayConfigurationTests(unittest.TestCase):
+    def test_self_play_finishes_checkmate_without_human_move_or_confirmation_prompts(self) -> None:
+        planned = ("f2f3", "e7e5", "g2g4", "d8h4")
+
+        class ScriptedEngine:
+            def __init__(self) -> None:
+                self.turns: list[bool] = []
+                self.quit_called = False
+
+            def play(self, board, _limit, *, root_moves):
+                move = chess.Move.from_uci(planned[len(self.turns)])
+                self.assertion_check(board, move, root_moves)
+                self.turns.append(board.turn)
+                return SimpleNamespace(move=move)
+
+            @staticmethod
+            def assertion_check(board, move, root_moves):
+                if move not in board.legal_moves or move not in root_moves:
+                    raise AssertionError(f"engine move {move} was not offered as a legal route")
+
+            def quit(self) -> None:
+                self.quit_called = True
+
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            executable = folder / "stockfish"
+            executable.write_bytes(b"mock engine")
+            geometry_file = DEFAULT_CONFIG.parent / "fixtures" / "board_geometry_2026-10-05.json"
+            controller = _geometry_from_file(geometry_file)
+            for simulated in (True, False):
+                with self.subTest(simulated=simulated):
+                    state = folder / ("simulated.json" if simulated else "physical.json")
+                    engine = ScriptedEngine()
+                    argv = ["--new", "--state", str(state), "--self-play", "--engine", str(executable)]
+                    if simulated:
+                        argv += ["--simulate", "--geometry-file", str(geometry_file)]
+                    with (
+                        patch("chess_table_host.play.chess.engine.SimpleEngine.popen_uci", return_value=engine),
+                        patch("chess_table_host.play._connect_physical", return_value=(SimulatedLink(), controller)),
+                        patch("builtins.input", side_effect=AssertionError("unexpected self-play prompt")),
+                        redirect_stdout(io.StringIO()) as output,
+                    ):
+                        result = main(argv)
+                    self.assertEqual(result, 0)
+                    self.assertEqual(engine.turns, [chess.WHITE, chess.BLACK, chess.WHITE, chess.BLACK])
+                    self.assertTrue(engine.quit_called)
+                    saved = JsonGameStore(state).load()
+                    self.assertEqual(saved.moves, list(planned))
+                    self.assertTrue(saved.board().is_checkmate())
+                    self.assertIn("Game complete: 0-1", output.getvalue())
+                    source = "simulation" if simulated else "controller_done"
+                    self.assertEqual(
+                        [event["confirmation_source"] for event in saved.events
+                         if event["event"] == "action_confirmed"],
+                        [source] * len(planned),
+                    )
+
+    def test_self_play_rejects_manual_both(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "game.json"
+            geometry = DEFAULT_CONFIG.parent / "fixtures" / "board_geometry_2026-10-05.json"
+            with redirect_stderr(io.StringIO()) as error:
+                with self.assertRaises(SystemExit) as raised:
+                    main([
+                        "--simulate", "--geometry-file", str(geometry),
+                        "--new", "--state", str(state), "--self-play", "--manual-both",
+                    ])
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn("--self-play", error.getvalue())
+
     def test_checked_in_defaults_use_com3_and_stockfish_folder(self) -> None:
         config = _load_config(DEFAULT_CONFIG)
         self.assertEqual(config["serial_port"], "COM3")

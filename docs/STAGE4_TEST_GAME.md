@@ -189,6 +189,42 @@ motion and stop if a piece shifts. To refuse every tight route for a session, ad
 .venv/bin/python -m chess_table_host.play --resume --state "$physical_state" --port "$serial_port" --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe --human white
 ```
 
+### Stockfish against Stockfish
+
+Use `--self-play` to let one Stockfish process choose moves for both colors. No human UCI
+entry is needed. Start with a fresh checkpoint and, for physical play, the
+standard starting position and empty parking. First run a complete simulated
+game in WSL using the saved geometry fixture:
+
+```bash
+self_play_sim_state="runs/self-play-sim-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --simulate --new --state "$self_play_sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --self-play --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe --engine-time 0.005
+```
+
+Once the Uno is attached and `serial_port` is set to the detected `/dev/...`
+device, run the physical game from a separate fresh checkpoint:
+
+```bash
+self_play_state="runs/self-play-physical-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --new --state "$self_play_state" --port "$serial_port" --self-play --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
+```
+
+For an interrupted game, use `--resume` with that same checkpoint and the
+same mode (`--simulate` with the geometry fixture, or `--port` with the
+attached Uno), `--self-play`, and the engine path. Do not start `--new` on an
+existing checkpoint. For a physical resume, inspect the board and all parking
+slots against the saved state first; an uncertain carry or fault still needs
+the reconciliation steps below. In ordinary play the host advances after each
+matched `DONE CARRY`, with no move or placement prompts. It has no piece
+sensors, so watch the board and stop if a piece moves incorrectly.
+
+For example, after a checked physical interruption, resume the same saved
+game with:
+
+```bash
+.venv/bin/python -m chess_table_host.play --resume --state "$self_play_state" --port "$serial_port" --self-play --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
+```
+
 If you open a new WSL shell, set `physical_state` and `serial_port` again to
 the saved file and attached port before using `--resume`. To continue the
 recorded 16-ply test, use

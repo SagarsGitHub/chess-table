@@ -26,6 +26,8 @@ The ignored checkpoint `computer/runs/physical-smoke-20261005-013125.json` recor
 
 A separate WSL Stockfish self-play simulation completed at 141 plies as a draw by insufficient material. It used the simulated controller and tight-route fallback, with 29 captures and 21 clearance overrides, and had no route or controller simulation failures. It did not include a promotion. This verifies that the software can reach a game ending with the current routing policy; loaded carries, physical clearance, promotion, and recovery remain open acceptance work.
 
+The `--self-play` CLI was then exercised with the installed Stockfish controlling both colors. A fresh WSL simulation reached a fifty-move-rule draw at 228 plies, with nine clearance overrides, no pending action, and no human move prompts. This verifies the unattended host game loop in simulation; the table has not yet completed a physical self-play game.
+
 ## Immediate next actions
 
 1. Try one loaded knight transfer from the saved position using the tight-route fallback, keeping travel bounds, occupied-center avoidance, the waypoint limit, active limits, and fault/recovery handling. Record the selected route, `ACK`/`DONE`, and observed piece positions. Normal play advances automatically after matched `DONE CARRY`; `--supervised` remains available for a deliberate test. The user reports 18 mm moving and standing diameters and practical success through some tight horizontal paths; path/centering error remains to be measured, so 0 mm margin is provisional.

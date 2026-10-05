@@ -335,7 +335,7 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
     scripted = args.moves or []
     _validate_script(runner, scripted)
     engine = None
-    if args.engine or (not scripted and not args.manual_both):
+    if args.engine or getattr(args, "self_play", False) or (not scripted and not args.manual_both):
         engine_path = _resolve_engine_path(args.engine or args.engine_config_path)
         print("Stockfish:", engine_path)
         engine = chess.engine.SimpleEngine.popen_uci(engine_path)
@@ -352,7 +352,9 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                 script_index = len(runner.state.moves)
                 if script_index < len(scripted):
                     uci = scripted[script_index]
-                elif engine is not None and board.turn != (args.human == "white"):
+                elif engine is not None and (
+                    getattr(args, "self_play", False) or board.turn != (args.human == "white")
+                ):
                     feasible = _feasible_engine_moves(runner, geometry)
                     if not feasible:
                         raise GameStateError("no legal engine move passes route preflight")
@@ -360,7 +362,10 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                         board, chess.engine.Limit(time=args.engine_time), root_moves=feasible,
                     )
                     uci = result.move.uci()
-                    print("Stockfish chose", uci, "from", len(feasible), "routable legal moves")
+                    print(
+                        "Stockfish", "White" if board.turn else "Black", "chose", uci,
+                        "from", len(feasible), "routable legal moves",
+                    )
                 elif engine is None and script_index >= len(scripted) and scripted:
                     print("Script finished; checkpoint saved for a later game session.")
                     break
@@ -470,7 +475,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="ask before moves/routes and after CARRY completion")
     parser.add_argument("--moves", nargs="+", help="scripted UCI moves, in order")
     parser.add_argument("--engine", help="override ~/Documents/stockfish with a Stockfish file or folder")
-    parser.add_argument("--manual-both", action="store_true", help="enter UCI moves for both sides")
+    players = parser.add_mutually_exclusive_group()
+    players.add_argument("--manual-both", action="store_true", help="enter UCI moves for both sides")
+    players.add_argument("--self-play", action="store_true",
+                         help="have Stockfish play both colors without human UCI entry")
     parser.add_argument("--human", choices=("white", "black"), default="white")
     parser.add_argument("--engine-time", type=float, default=0.5, help="Stockfish seconds per move")
     args = parser.parse_args(argv)

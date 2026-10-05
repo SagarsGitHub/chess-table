@@ -134,6 +134,31 @@ moves are entered as UCI text; the table then carries both sides' pieces.
 `--manual-both` is available for testing without an engine. The runner offers
 Stockfish only legal moves that pass physical route preflight.
 
+Use `--self-play` for one Stockfish process to choose both colors without human UCI entry.
+From the WSL `computer` directory, run a simulated full game with the saved
+geometry fixture first:
+
+```bash
+self_play_sim_state="runs/self-play-sim-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --simulate --new --state "$self_play_sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --self-play --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe --engine-time 0.005
+```
+
+For a physical game, restore the standard starting position, empty parking,
+attach the Uno to WSL, and replace the example port with the detected device:
+
+```bash
+serial_port=/dev/ttyACM0
+self_play_state="runs/self-play-physical-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --new --state "$self_play_state" --port "$serial_port" --self-play --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
+```
+
+An interrupted game can continue with `--resume --state` pointing to its
+existing checkpoint, plus the same `--self-play`, engine, and connection or
+simulation options. Normal physical play advances after a matched `DONE CARRY`.
+The table cannot sense pieces, so an uncertain carry or fault requires
+inspection and reconciliation before resuming. The runbook below has the USB
+attachment and recovery steps.
+
 See [the stage 4 physical test runbook](../docs/STAGE4_TEST_GAME.md) for exact
 simulation, port discovery, physical smoke, and resume commands.
 
