@@ -10,11 +10,10 @@ slots lie on the even-coordinate perimeter.
 
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import KW_ONLY, dataclass
 from functools import lru_cache
 from heapq import heappop, heappush
-from math import ceil, floor, isfinite
+from math import ceil, floor, hypot, isfinite
 from struct import pack, unpack
 from typing import Iterable
 
@@ -208,6 +207,15 @@ def _distance_squared_to_segment(
     return dx * dx + dy * dy
 
 
+def _point_on_segment(point: HalfSquarePoint, a: HalfSquarePoint, b: HalfSquarePoint) -> bool:
+    """Match the Uno's exact occupied-center check before pulse rounding."""
+
+    dx, dy = b.x - a.x, b.y - a.y
+    px, py = point.x - a.x, point.y - a.y
+    dot = px * dx + py * dy
+    return px * dy == py * dx and 0 <= dot <= dx * dx + dy * dy
+
+
 def _adjacent_intersections(square: HalfSquarePoint) -> tuple[HalfSquarePoint, ...]:
     return tuple(
         HalfSquarePoint(square.x + dx, square.y + dy)
@@ -226,7 +234,7 @@ def _adjacent_edge_centers(park: HalfSquarePoint) -> tuple[HalfSquarePoint, ...]
 
 
 def _compress_collinear(points: list[HalfSquarePoint]) -> tuple[HalfSquarePoint, ...]:
-    """Keep diagonal link endpoints; compress only straight grid runs."""
+    """Keep center links; compress straight orthogonal or diagonal grid runs."""
 
     compressed: list[HalfSquarePoint] = []
     for point in points:
@@ -257,7 +265,7 @@ def plan_transfer_route(
     update its occupancy snapshot after each acknowledged transfer, especially
     between the victim and attacker legs of a capture. Paths use short
     diagonal entries from square centers to adjacent grid intersections, then
-    horizontal/vertical grid edges. A vacant edge square adjacent to the
+    horizontal, vertical, or 45-degree grid edges. A vacant edge square adjacent to the
     parking endpoint may be used as an additional approach, so an occupied
     neighbor slot need not trap a corner slot. Occupied perimeter slots are
     obstacles.
@@ -327,10 +335,13 @@ def plan_transfer_route(
         + ("without crossing occupied centers" if ignore_piece_clearance else "at the specified clearance")
     )
 
+    @lru_cache(maxsize=None)
     def clear(a: HalfSquarePoint, b: HalfSquarePoint) -> bool:
         try:
             start, end = metric(a), metric(b)
         except RouteError:
+            return False
+        if any(_point_on_segment(obstacle, a, b) for obstacle in obstacles):
             return False
         if required_squared is None:
             return all(
@@ -343,7 +354,9 @@ def plan_transfer_route(
         )
 
     # Board centers attach to four diagonal grid points; parking is itself a
-    # grid point. Grid moves are orthogonal and one square pitch long.
+    # grid point. A diagonal grid edge crosses the intervening square center,
+    # so the full segment must be checked against every occupied center.
+    @lru_cache(maxsize=None)
     def neighbors(here: HalfSquarePoint) -> tuple[HalfSquarePoint, ...]:
         if here.x % 2 and here.y % 2:
             next_points = _adjacent_intersections(here)
@@ -352,7 +365,10 @@ def plan_transfer_route(
         else:
             next_points = tuple(
                 HalfSquarePoint(here.x + dx, here.y + dy)
-                for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2))
+                for dx, dy in (
+                    (-2, 0), (2, 0), (0, -2), (0, 2),
+                    (-2, -2), (-2, 2), (2, -2), (2, 2),
+                )
                 if 0 <= here.x + dx <= 16 and 0 <= here.y + dy <= 16
             )
             if isinstance(destination, BoardSquare) and here in _adjacent_intersections(destination_point):
@@ -363,77 +379,127 @@ def plan_transfer_route(
             )
         return next_points
 
+    Heading = tuple[int, int] | None
+    # The flag records whether the incoming link joined two grid points. It
+    # prevents counting the first grid link after a center as compressible.
+    State = tuple[HalfSquarePoint, Heading, bool, int | None]
+    first: State = (source_point, None, False, None)
+
+    def link(
+        state: State, next_point: HalfSquarePoint
+    ) -> tuple[Heading, bool, bool]:
+        here, heading, incoming_grid, _ = state
+        dx, dy = next_point.x - here.x, next_point.y - here.y
+        next_heading = ((dx > 0) - (dx < 0), (dy > 0) - (dy < 0))
+        grid_edge = not (here.x & 1 or here.y & 1 or next_point.x & 1 or next_point.y & 1)
+        return next_heading, grid_edge, incoming_grid and grid_edge and heading == next_heading
+
+    def reconstruct(previous: dict[State, State | None], state: State) -> tuple[HalfSquarePoint, ...]:
+        reverse: list[HalfSquarePoint] = []
+        cursor: State | None = state
+        while cursor is not None:
+            reverse.append(cursor[0])
+            cursor = previous[cursor]
+        reverse.reverse()
+        return _compress_collinear(reverse)
+
+    @lru_cache(maxsize=None)
+    def segment_length(a: HalfSquarePoint, b: HalfSquarePoint) -> float:
+        start, end = metric(a), metric(b)
+        return hypot(end[0] - start[0], end[1] - start[1])
+
+    @lru_cache(maxsize=None)
+    def remaining_distance(point: HalfSquarePoint) -> float:
+        start, end = metric(point), metric(destination_point)
+        return hypot(end[0] - start[0], end[1] - start[1])
+
+    # A small turn cost makes a smooth route preferable to a barely shorter
+    # zigzag. The segment length still dominates any substantial detour.
+    turn_cost = 0.15 * (geometry.square_pitch_mm if geometry else 2.0)
+
+    def shortest_route(waypoint_limit: int | None) -> tuple[HalfSquarePoint, ...] | None:
+        start: State = first if waypoint_limit is None else (source_point, None, False, 1)
+        # Weighted length, actual length, turns, retained waypoints, graph links.
+        initial_cost = (0.0, 0.0, 0, 1, 0)
+        best: dict[State, tuple[float, float, int, int, int]] = {start: initial_cost}
+        previous: dict[State, State | None] = {start: None}
+        heap = [(remaining_distance(source_point), initial_cost, 0, start)]
+        serial = 0
+        while heap:
+            _, cost, _, state = heappop(heap)
+            if cost != best[state]:
+                continue
+            here, heading, _, _ = state
+            if here == destination_point:
+                return reconstruct(previous, state)
+            for next_point in neighbors(here):
+                if not clear(here, next_point):
+                    continue
+                next_heading, grid_edge, same_run = link(state, next_point)
+                kept = cost[3] + (0 if same_run else 1)
+                if waypoint_limit is not None and kept > waypoint_limit:
+                    continue
+                turn = int(heading is not None and heading != next_heading)
+                distance = segment_length(here, next_point)
+                next_cost = (
+                    cost[0] + distance + turn_cost * turn,
+                    cost[1] + distance,
+                    cost[2] + turn,
+                    kept,
+                    cost[4] + 1,
+                )
+                next_state: State = (
+                    next_point, next_heading, grid_edge,
+                    kept if waypoint_limit is not None else None,
+                )
+                if next_state not in best or next_cost < best[next_state]:
+                    best[next_state] = next_cost
+                    previous[next_state] = state
+                    serial += 1
+                    heappush(heap, (
+                        next_cost[0] + remaining_distance(next_point),
+                        next_cost, serial, next_state,
+                    ))
+        return None
+
     def fewest_waypoints() -> tuple[HalfSquarePoint, ...]:
-        # The state remembers the incoming heading, which completely decides
-        # whether another grid edge can share the current straight waypoint.
-        # This is a bounded Dijkstra search over at most 84 points * 8 headings.
-        Heading = tuple[int, int] | None
-        State = tuple[HalfSquarePoint, Heading]
-        first: State = (source_point, None)
         best: dict[State, tuple[int, int]] = {first: (1, 0)}
-        previous_state: dict[State, State | None] = {first: None}
-        heap: list[tuple[int, int, int, State]] = [(1, 0, 0, first)]
+        previous: dict[State, State | None] = {first: None}
+        heap = [(1, 0, 0, first)]
         serial = 0
         while heap:
             kept, steps, _, state = heappop(heap)
             if (kept, steps) != best[state]:
                 continue
-            here, heading = state
+            here = state[0]
             if here == destination_point:
-                reverse: list[HalfSquarePoint] = []
-                cursor: State | None = state
-                while cursor is not None:
-                    reverse.append(cursor[0])
-                    cursor = previous_state[cursor]
-                reverse.reverse()
-                return _compress_collinear(reverse)
+                return reconstruct(previous, state)
             for next_point in neighbors(here):
                 if not clear(here, next_point):
                     continue
-                dx, dy = next_point.x - here.x, next_point.y - here.y
-                next_heading = ((dx > 0) - (dx < 0), (dy > 0) - (dy < 0))
-                same_grid_run = (
-                    heading == next_heading and
-                    not (here.x & 1 or here.y & 1 or next_point.x & 1 or next_point.y & 1) and
-                    (dx == 0 or dy == 0)
-                )
-                cost = (kept + (0 if same_grid_run else 1), steps + 1)
-                next_state: State = (next_point, next_heading)
-                if next_state not in best or cost < best[next_state]:
-                    best[next_state] = cost
-                    previous_state[next_state] = state
+                next_heading, grid_edge, same_run = link(state, next_point)
+                next_cost = (kept + (0 if same_run else 1), steps + 1)
+                next_state: State = (next_point, next_heading, grid_edge, None)
+                if next_state not in best or next_cost < best[next_state]:
+                    best[next_state] = next_cost
+                    previous[next_state] = state
                     serial += 1
-                    heappush(heap, (cost[0], cost[1], serial, next_state))
+                    heappush(heap, (next_cost[0], next_cost[1], serial, next_state))
         raise NoRouteError(no_route_message)
 
-    queue = deque([source_point])
-    previous: dict[HalfSquarePoint, HalfSquarePoint | None] = {source_point: None}
-    while queue:
-        here = queue.popleft()
-        if here == destination_point:
-            points: list[HalfSquarePoint] = []
-            cursor: HalfSquarePoint | None = here
-            while cursor is not None:
-                points.append(cursor)
-                cursor = previous[cursor]
-            points.reverse()
-            compressed = _compress_collinear(points)
-            if max_waypoints is not None and len(compressed) > max_waypoints:
-                compressed = fewest_waypoints()
-                if len(compressed) > max_waypoints:
-                    raise RouteTooLongError(len(compressed), max_waypoints)
-            return CarryRoute(
-                transfer, compressed,
-                geometry_applied=geometry is not None,
-                clearance_ignored=geometry is not None and ignore_piece_clearance,
-            )
-
-        for next_point in neighbors(here):
-            if next_point not in previous and clear(here, next_point):
-                previous[next_point] = here
-                queue.append(next_point)
-
-    raise NoRouteError(no_route_message)
+    compressed = shortest_route(None)
+    if compressed is None:
+        raise NoRouteError(no_route_message)
+    if max_waypoints is not None and len(compressed) > max_waypoints:
+        compressed = shortest_route(max_waypoints)
+        if compressed is None:
+            required = len(fewest_waypoints())
+            raise RouteTooLongError(required, max_waypoints)
+    return CarryRoute(
+        transfer, compressed,
+        geometry_applied=geometry is not None,
+        clearance_ignored=geometry is not None and ignore_piece_clearance,
+    )
 
 
 def find_reachable_parking_slot(

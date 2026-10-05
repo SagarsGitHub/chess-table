@@ -170,7 +170,7 @@ void processFrame() {
     if (*args) { error(id, F("SYNTAX")); return; }
     if (strcmp(verb, "HELLO") == 0) {
         if (busy()) { error(id, F("BUSY")); return; }
-        done(id, F("HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,SAVE,GEOM"));
+        done(id, F("HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,SAVE,GEOM"));
     } else if (strcmp(verb, "STATUS") == 0) {
         prefix(id); Serial.print(F("DONE STATUS REF=")); Serial.print(board.referenced() ? '1' : '0');
         Serial.print(F(" BUSY=")); Serial.print(busy() ? '1' : '0');

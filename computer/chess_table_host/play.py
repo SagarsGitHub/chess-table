@@ -157,7 +157,7 @@ def _show_physical_state(state: GameState) -> None:
     stand_ins = [
         f"{name}: physical {physical} represents logical {logical.piece_at(chess.parse_square(name)).symbol()}"
         for name, physical in sorted(state.physical_squares.items())
-        if logical.piece_at(chess.parse_square(name)) is not None
+        if state.reset is None and logical.piece_at(chess.parse_square(name)) is not None
         and logical.piece_at(chess.parse_square(name)).symbol() != physical
     ]
     if stand_ins:
@@ -169,9 +169,46 @@ def _show_physical_state(state: GameState) -> None:
         print("Pending action:", _describe_action(pending.actions[pending.next_action]))
         if pending.active_route:
             print("Last CARRY arguments:", " ".join(pending.active_route))
+    if state.reset:
+        reset = state.reset
+        print(f"Pending board reset: transfer {reset.next_action + 1}/"
+              f"{len(reset.actions)}, phase={reset.phase}")
+        print("Pending transfer:", _describe_action(reset.actions[reset.next_action]))
+        if reset.active_route:
+            print("Last CARRY arguments:", " ".join(reset.active_route))
 
 
-def _reconcile_at_start(runner: GameRunner, *, automatic: bool = False) -> None:
+def _reconcile_at_start(runner: GameRunner, *, automatic: bool = False) -> bool:
+    reset = runner.state.reset
+    if reset:
+        uncertain = reset.phase != "ready"
+        _show_physical_state(runner.state)
+        if uncertain:
+            print("Inspect the last reset transfer and every affected square and parking slot.")
+            print("SOURCE: restore its piece to the action source. DESTINATION: confirm it arrived.")
+            print("ABORT: manually restore the entire pre-reset game position.")
+            answer = input("Type SOURCE, DESTINATION, or ABORT after physical inspection: ").strip().lower()
+            if answer not in {"source", "destination", "abort"}:
+                raise ReconciliationRequired("no reset recovery outcome was selected")
+            if not _yes("Did you inspect and restore/verify the selected physical state?"):
+                raise ReconciliationRequired("physical state was not confirmed")
+            if answer == "abort":
+                runner.abort_reset_after_restore()
+                print("Board reset aborted; the pre-reset game checkpoint is restored.")
+                return False
+            else:
+                runner.resolve_uncertain_reset(answer)
+        elif not automatic:
+            print("Continuing the checkpointed board reset from its last completed transfer.")
+        _show_physical_state(runner.state)
+        if (uncertain or not automatic) and not _yes(
+            "Does the entire physical board and parking inventory match this checkpoint?"
+        ):
+            raise ReconciliationRequired("physical board does not match the saved reset checkpoint")
+        if runner.state.reset is None:
+            print("Board reset completed during reconciliation; the checkpoint is a fresh game.")
+            return False
+        return True
     pending = runner.state.pending
     uncertain_at_start = pending is not None and pending.phase != "ready"
     if pending:
@@ -207,6 +244,7 @@ def _reconcile_at_start(runner: GameRunner, *, automatic: bool = False) -> None:
         "Does the entire physical board and parking inventory match this checkpoint?"
     ):
         raise ReconciliationRequired("physical board does not match the saved checkpoint")
+    return True
 
 
 def _geometry_from_file(path: Path) -> ControllerGeometry:
@@ -243,7 +281,7 @@ def _connect_physical(port: str, *, full_home: bool, serial_log: Path):
         link.stream = LoggedSerialStream(link.stream, serial_log)
         print("Serial transcript:", serial_log)
         hello = link.hello()
-        required = {"STATUS", "HOME", "REF", "MAP", "CARRY", "GEOM"}
+        required = {"STATUS", "HOME", "REF", "MAP", "CARRY", "CARRY_DIAG", "GEOM"}
         if not required.issubset(hello.capabilities):
             raise GameStateError(f"controller lacks {sorted(required - hello.capabilities)}")
         status = link.status()
@@ -431,6 +469,73 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
             engine.quit()
 
 
+def _archive_checkpoint(path: Path) -> Path:
+    """Preserve the exact played checkpoint bytes before reset modifies it."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    for attempt in range(1000):
+        suffix = "" if attempt == 0 else f"-{attempt:03d}"
+        archive = path.with_name(f"{path.stem}.before-reset-{stamp}{suffix}{path.suffix}")
+        try:
+            with path.open("rb") as original, archive.open("xb") as copy:
+                shutil.copyfileobj(original, copy)
+                copy.flush()
+                os.fsync(copy.fileno())
+            return archive
+        except FileExistsError:
+            continue
+        except BaseException:
+            archive.unlink(missing_ok=True)
+            raise
+    raise GameStateError("could not find a free checkpoint archive filename")
+
+
+def _run_reset(args: argparse.Namespace, runner: GameRunner, link, geometry: RouteGeometry) -> None:
+    if runner.state.reset is None:
+        preview = runner.preflight_reset(geometry)
+        if preview or runner.state.moves:
+            print("Played checkpoint archived:", _archive_checkpoint(runner.store.path))
+        actions = runner.prepare_reset(geometry)
+        if not actions:
+            print("Board is already in the standard setup; checkpoint reset for a new game.")
+            return
+        print(f"Board reset prepared: {len(actions)} transfers; full route preflight passed.")
+    else:
+        print(f"Resuming board reset at transfer {runner.state.reset.next_action + 1}/"
+              f"{len(runner.state.reset.actions)}.")
+
+    def approve_route(action: Transfer, route, wire) -> bool:
+        points = " -> ".join(f"({point.x},{point.y})" for point in route.points)
+        print("Reset route for", _describe_action(action), ":", points)
+        print("CARRY arguments:", " ".join(wire))
+        if route.clearance_ignored:
+            print("CLEARANCE OVERRIDE: using the bounded occupied-center-safe route.")
+        return args.simulate or not args.supervised or _yes("Start this reset transfer?")
+
+    def confirm(action: Transfer) -> bool:
+        if args.simulate:
+            print("SIM CONFIRMED", _describe_action(action))
+            return True
+        if args.supervised:
+            return _yes(f"Confirm reset transfer: {_describe_action(action)}?")
+        print("Controller DONE; advancing", _describe_action(action))
+        return True
+
+    try:
+        runner.execute_reset(
+            link, geometry, confirm, approve_route,
+            confirmation_source=(
+                "simulation" if args.simulate else
+                "operator" if args.supervised else "controller_done"
+            ),
+        )
+    except MoveDeferred as exc:
+        print(exc)
+        print("Reset checkpoint saved; resume with --reset-board when ready.")
+        return
+    print("Board reset complete. All 32 pieces are at their starting squares; parking is empty.")
+    print("The checkpoint now contains a fresh standard-position game.")
+
+
 def _list_ports(configured_port: str) -> int:
     try:
         from serial.tools import list_ports
@@ -457,6 +562,8 @@ def main(argv: list[str] | None = None) -> int:
     session = parser.add_mutually_exclusive_group()
     session.add_argument("--new", action="store_true", help="create a new standard-position game")
     session.add_argument("--resume", action="store_true", help="load an existing checkpoint")
+    parser.add_argument("--reset-board", action="store_true",
+                        help="restore all pieces from a reconciled game checkpoint, then start fresh")
     connection = parser.add_mutually_exclusive_group()
     connection.add_argument("--port", help="override configured Uno port for this run")
     connection.add_argument("--simulate", action="store_true", help="no hardware; auto-confirm transfers")
@@ -510,6 +617,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--engine-time must be positive")
     if args.engine and args.manual_both:
         parser.error("--engine and --manual-both cannot be combined")
+    if args.reset_board and (not args.resume or args.moves or args.engine or args.self_play):
+        parser.error("--reset-board requires --resume and cannot be combined with moves or an engine")
     store = JsonGameStore(args.state)
     if args.new:
         if args.state.exists():
@@ -521,18 +630,25 @@ def main(argv: list[str] | None = None) -> int:
             state = store.load()
         except (GameStateError, OSError, ValueError) as exc:
             parser.error(f"could not load state file {args.state}: {exc}")
+    if args.reset_board and state.pending is not None:
+        parser.error("resolve or finish the pending chess move before --reset-board")
+    if not args.reset_board and state.reset is not None:
+        parser.error("checkpoint contains a board reset; resume with --reset-board")
     runner = GameRunner(state, store, allow_tight_routes=args.allow_tight_routes)
     link = None
     try:
         if not args.simulate:
-            _reconcile_at_start(runner, automatic=not args.supervised)
-            _validate_script(runner, args.moves or [])
+            if not _reconcile_at_start(runner, automatic=not args.supervised):
+                return 0
+            if not args.reset_board:
+                _validate_script(runner, args.moves or [])
             serial_log = args.serial_log or args.state.with_name(args.state.stem + ".serial.jsonl")
             link, controller = _connect_physical(
                 args.port, full_home=args.home, serial_log=serial_log
             )
         else:
-            _validate_script(runner, args.moves or [])
+            if not args.reset_board:
+                _validate_script(runner, args.moves or [])
             link = SimulatedLink()
             controller = _geometry_from_file(args.geometry_file)
             print("SIMULATION ONLY; no board or magnet will move.")
@@ -543,11 +659,16 @@ def main(argv: list[str] | None = None) -> int:
         print("Tight-route fallback:", "enabled" if args.allow_tight_routes else "disabled")
         if not args.simulate:
             print("Physical advancement:", "supervised" if args.supervised else "automatic after DONE CARRY")
-        _play_moves(args, runner, link, geometry)
+        if args.reset_board:
+            _run_reset(args, runner, link, geometry)
+        else:
+            _play_moves(args, runner, link, geometry)
         return 0
     except KeyboardInterrupt:
         print("Interrupted. Inspect the physical board and saved pending action before resuming.")
-        if link is not None and not args.simulate and state.pending and state.pending.phase == "in_flight":
+        if (link is not None and not args.simulate and
+                ((runner.state.pending and runner.state.pending.phase == "in_flight") or
+                 (runner.state.reset and runner.state.reset.phase == "in_flight"))):
             try:
                 link.stop()
             except LinkError as exc:

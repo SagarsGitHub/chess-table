@@ -216,6 +216,7 @@ function map(locations) {
 }
 function carry(source, destination, encoded, timeout = 25000) {
   expectedRoute = routeMm(encoded); maxCrossTrack = 0;
+  piecePulses = [[], []];
   trackPiece = true; relayEvents = [];
   const id = request('CARRY ' + source + ' ' + destination + ' ' + encoded);
   expectDone(id, 'CARRY', timeout); run(80);
@@ -227,6 +228,33 @@ function carry(source, destination, encoded, timeout = 25000) {
   }
   trackPiece = false;
   return id;
+}
+function checkLoadedProfile() {
+  // The d5-to-P00 fixture contains a 93.75 mm loaded horizontal leg.
+  // Measure the actual STEP pulse timing from the compiled firmware.
+  const runs = [];
+  let current = [];
+  for (const pulse of piecePulses[0]) {
+    if (current.length && (pulse.at - current.at(-1).at) / 16000 > 50) {
+      runs.push(current); current = [];
+    }
+    current.push(pulse);
+  }
+  if (current.length) runs.push(current);
+  const longest = runs.reduce((a, b) => b.length > a.length ? b : a, []);
+  assert(longest.length > 10000, 'long loaded segment recorded');
+  function speedAt(index) {
+    const halfWindow = 20;
+    const pulseSpan = 2 * halfWindow;
+    const seconds = (longest[index + halfWindow].at -
+      longest[index - halfWindow].at) / 16000000;
+    return pulseSpan * .0075 / seconds;
+  }
+  const early = speedAt(133); // About 1 mm into the acceleration ramp.
+  const cruise = speedAt(4000);
+  assert(early >= 23 && early <= 34, `loaded ramp near 1 mm: ${early} mm/s`);
+  assert(cruise >= 57 && cruise <= 63, `loaded cruise: ${cruise} mm/s`);
+  assert(cruise > early * 1.6, 'loaded carry accelerates gradually');
 }
 function checkGeom() {
   const id = request('GEOM');
@@ -250,7 +278,7 @@ assert(!relayHigh);
 modelEnabled = true; updateModel();
 
 let id = request('HELLO');
-assert(serial.includes('@' + id + ' DONE HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,SAVE,GEOM'));
+assert(serial.includes('@' + id + ' DONE HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,SAVE,GEOM'));
 id = request('STATUS');
 assert(serial.includes('DONE STATUS REF=0 BUSY=0 MAP=0 SAVED=' + (restoreTest ? 1 : 0)));
 id = request('GEOM'); expectError(id, 'REFERENCE');
@@ -318,6 +346,15 @@ if (badStorage) {
   id = request('CARRY 1 18 31424455'); expectError(id, 'MAP'); noMotion();
   console.log('PASS square-to-square carry commits occupancy only after release');
 
+  // Direct grid diagonal is legal only when it is 45 degrees and crosses no
+  // occupied center. The d4 center lies halfway between grid points 66 and 88.
+  map([18, 27]);
+  id = request('CARRY 18 36 55668899'); expectError(id, 'ROUTE'); noMotion();
+  map([18]);
+  id = request('CARRY 18 36 55668A99'); expectError(id, 'ROUTE'); noMotion();
+  carry(18, 36, '55668899');
+  console.log('PASS 45-degree grid diagonal and occupied-center guard');
+
   // A victim at c3 must leave before the knight at b1 can occupy c3.
   map([1, 18]);
   id = request('CARRY 1 18 31424455'); expectError(id, 'MAP'); noMotion();
@@ -332,8 +369,9 @@ if (badStorage) {
   id = request('CARRY 35 64 79680800'); expectError(id, 'ROUTE'); noMotion();
   map([35]);
   carry(35, 64, '79680800');
+  checkLoadedProfile();
   carry(64, 35, '00086879');
-  console.log('PASS square-to-parking vector, perimeter blocker, and retrieval');
+  console.log('PASS square-to-parking vector, gentler loaded profile, perimeter blocker, and retrieval');
 
   // A 1 ms pulse during actual travel must not cancel; 10 ms during release
   // dwell is ignored even though it exceeds the movement threshold.

@@ -228,6 +228,75 @@ game with:
 .venv/bin/python -m chess_table_host.play --resume --state "$self_play_state" --port "$serial_port" --self-play --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
 ```
 
+## Test the movement refinements and reset-board command
+
+The host now requires the firmware's `CARRY_DIAG` capability before physical
+play. Flash the firmware from this checkout before testing the new routes; an
+older Uno build will be rejected at connection. After attaching the Uno to WSL
+and identifying its `/dev/...` port, build and upload with PlatformIO. If
+PlatformIO is already installed in WSL, use its `pio` command in place of
+`.venv/bin/pio`:
+
+```bash
+cd /mnt/c/Users/sagar/Documents/Coding/chess-table/firmware
+python3 -m venv .venv
+.venv/bin/python -m pip install platformio
+serial_port=/dev/ttyACM0  # replace with the detected WSL port
+.venv/bin/pio run
+.venv/bin/pio run -t upload --upload-port "$serial_port"
+```
+
+The new loaded-carry starting profile is 60 mm/s and 400 mm/s². Unloaded
+travel and homing keep their previous profiles. First simulate a short line
+that clears the path for the bishop's direct `c1h6` diagonal, then reset the
+simulated board from the same checkpoint:
+
+```bash
+cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
+diag_sim_state="runs/diagonal-sim-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --simulate --new --state "$diag_sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --moves e2e4 a7a6 d2d3 a6a5 c1h6
+.venv/bin/python -m chess_table_host.play --simulate --resume --reset-board --state "$diag_sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json
+```
+
+With all 32 pieces in the physical starting setup and parking empty, run the
+same line on the board. Keep the power cutoff reachable. Inspect the bishop,
+neighboring pieces, and parking after the line; then reset from that played
+checkpoint. Normal successful carries advance without per-transfer prompts.
+Use `--supervised` only when deliberately testing with prompts.
+
+```bash
+diag_state="runs/diagonal-physical-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --new --state "$diag_state" --port "$serial_port" --moves e2e4 a7a6 d2d3 a6a5 c1h6
+.venv/bin/python -m chess_table_host.play --resume --reset-board --state "$diag_state" --port "$serial_port"
+```
+
+After confirming the board is back at the standard setup, use a separate
+checkpoint to test returning a captured piece from parking. The third ply
+parks Black's d-pawn; the reset must bring it back to d7 and restore all
+other pieces before clearing the game:
+
+```bash
+capture_state="runs/reset-capture-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --new --state "$capture_state" --port "$serial_port" --moves e2e4 d7d5 e4d5
+.venv/bin/python -m chess_table_host.play --resume --reset-board --state "$capture_state" --port "$serial_port"
+```
+
+Before the physical reset, compare every piece and occupied parking slot
+with the displayed checkpoint. The reset command preflights its full route
+list, archives the played checkpoint beside it with a
+`.before-reset-<UTC timestamp>.json` suffix,
+and checkpoints each `MAP`/`CARRY` transfer. It creates a fresh game in the
+same state file only after every physical piece is home. If a carry stops
+or its result is uncertain, inspect its source, destination, and affected
+pieces before choosing SOURCE or DESTINATION on resume; do not replay it
+blindly. The 155-ply checkpoint's stopped `h5h4` carry must be reconciled as
+a game move before it can be used for reset. Record diagonal route shape,
+carry time, slip/wobble, neighboring displacement, relay behavior, and any
+limit fault, then repeat after the PTFE test. A simulator pass does not certify
+loaded motion on glass.
+
+## Game checkpoint notes
+
 If you open a new WSL shell, set `physical_state` and `serial_port` again to
 the saved file and attached port before using `--resume`. To continue the
 recorded 16-ply test, use

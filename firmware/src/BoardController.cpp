@@ -81,7 +81,10 @@ BoardController::StartError BoardController::startCarry(
         const HalfSquarePoint previous = points[i - 1];
         const int8_t dx = p.x - previous.x, dy = p.y - previous.y;
         if (square == ((previous.x & 1) != 0)) {
-            if (square || !((dx == 0 && dy != 0) || (dy == 0 && dx != 0)))
+            // A 45-degree grid diagonal may pass through an empty square center.
+            // The occupied-center check below still rejects a standing piece.
+            if (square || !((dx == 0 && dy != 0) || (dy == 0 && dx != 0) ||
+                            (dx != 0 && abs(dx) == abs(dy))))
                 return StartError::Route;
         } else if ((dx != 1 && dx != -1) || (dy != 1 && dy != -1))
             return StartError::Route;

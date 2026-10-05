@@ -26,7 +26,7 @@ transition, magnet event, and commanded pulse position.
 
 | Mode | Coverage |
 | --- | --- |
-| Default | HELLO/STATUS/GEOM, monotonic IDs across 32767, duplicate rejection, MAP syntax and busy rejection, async HOME/SAVE, route/map validation before motion, square carry, victim-first capture order, d5-to-P00 host vector, occupied perimeter blocker, retrieval, short travel pulse, dwell contact, sustained moving contact, STOP, raw homing edge |
+| Default | HELLO/STATUS/GEOM and CARRY_DIAG capability, monotonic IDs across 32767, duplicate rejection, MAP syntax and busy rejection, async HOME/SAVE, route/map validation before motion, square carry, accepted 45-degree grid diagonal, rejection of occupied-center crossing and non-45-degree diagonal, victim-first capture order, d5-to-P00 host vector, measured loaded STEP ramp and cruise, occupied perimeter blocker, retrieval, short travel pulse, dwell contact, sustained moving contact, STOP, raw homing edge |
 | `--restore` | Fresh MCU from saved EEPROM still requires MIN reference and a fresh occupancy MAP |
 | `--small-table` | Measured table too short for the configured board cannot enable carry |
 | `--corrupt` / `--interrupted-save` / `--config-change` | Damaged, unfinished, or incompatible EEPROM records cannot authorize REF |

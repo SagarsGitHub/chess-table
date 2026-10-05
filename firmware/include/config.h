@@ -36,9 +36,9 @@ constexpr float PULSES_PER_MM = FULL_STEPS_PER_REV * MICROSTEPS / SCREW_LEAD_MM;
 constexpr float MAX_SPEED_MM_PER_SEC = 150.0f;
 // Board profiles use the configured operating maximum, not the pulse ceiling.
 constexpr float TRAVEL_SPEED_MM_PER_SEC = MAX_SPEED_MM_PER_SEC;
-constexpr float PIECE_SPEED_MM_PER_SEC = 75.0f; // Requested carrying speed.
+constexpr float PIECE_SPEED_MM_PER_SEC = 60.0f; // Gentler loaded carry; tune on the physical board.
 constexpr float ACCELERATION_MM_PER_SEC2 = 1000.0f;
-constexpr float PIECE_ACCELERATION_MM_PER_SEC2 = ACCELERATION_MM_PER_SEC2 * (2.0f / 3.0f);
+constexpr float PIECE_ACCELERATION_MM_PER_SEC2 = 400.0f;
 constexpr uint16_t BOARD_DWELL_MS = 500;
 constexpr uint16_t MAGNET_SETTLE_MS = 350;
 constexpr uint32_t BOARD_MOVE_TIMEOUT_MS = 15000;
@@ -95,8 +95,14 @@ static_assert(Config::BOARD_SQUARE_MM > 0 && Config::PIECE_DIAMETER_MM > 0,
 static_assert(Config::PIECE_SPEED_MM_PER_SEC > 0 &&
                   Config::PIECE_SPEED_MM_PER_SEC <= Config::TRAVEL_SPEED_MM_PER_SEC &&
                   Config::TRAVEL_SPEED_MM_PER_SEC <= Config::MAX_SPEED_MM_PER_SEC &&
-                  Config::PIECE_ACCELERATION_MM_PER_SEC2 > 0,
-              "Piece profile must not exceed configured travel speed");
+                  Config::PIECE_ACCELERATION_MM_PER_SEC2 > 0 &&
+                  Config::PIECE_ACCELERATION_MM_PER_SEC2 <= Config::ACCELERATION_MM_PER_SEC2 &&
+                  // A full 8-pitch diagonal is the longest possible route segment.
+                  Config::BOARD_MOVE_TIMEOUT_MS > 1000.0f *
+                      (8.0f * Config::BOARD_SQUARE_MM * 1.4143f /
+                           Config::PIECE_SPEED_MM_PER_SEC +
+                       Config::PIECE_SPEED_MM_PER_SEC / Config::PIECE_ACCELERATION_MM_PER_SEC2),
+              "Loaded profile exceeds travel limits or segment timeout");
 static_assert((Config::X_OUTWARD_DIR_LEVEL == HIGH || Config::X_OUTWARD_DIR_LEVEL == LOW) &&
                   (Config::Y_OUTWARD_DIR_LEVEL == HIGH || Config::Y_OUTWARD_DIR_LEVEL == LOW),
               "Each direction must be HIGH or LOW");

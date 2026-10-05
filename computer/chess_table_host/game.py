@@ -8,6 +8,7 @@ victim and attacker legs of a capture.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Protocol
@@ -28,13 +29,13 @@ from .planner import (
     plan_move,
 )
 from .routing import (
-    CarryRoute, NoRouteError, ReachableParkingSlotSelector, RouteGeometry,
-    RouteTooLongError, plan_transfer_route,
+    CarryRoute, NoRouteError, ReachableParkingSlotSelector, RouteError,
+    RouteGeometry, RouteTooLongError, location_point, plan_transfer_route,
 )
 from .wire import encode_carry, encode_map
 
 
-STATE_VERSION = 3
+STATE_VERSION = 4
 PROMOTION_RULE = "pawn_stand_in"
 
 
@@ -185,6 +186,25 @@ def _occupied_slots(slots: list[str | None]) -> set[ParkingSlot]:
     return {ParkingSlot(i) for i, piece in enumerate(slots) if piece is not None}
 
 
+def _parking_approaches(slot: ParkingSlot) -> tuple[str, ...]:
+    """Board centers through which a parked piece can enter or leave its slot."""
+    point = location_point(slot)
+    return tuple(
+        f"{chr(ord('a') + (point.x + dx - 1) // 2)}{(point.y + dy + 1) // 2}"
+        for dx in (-1, 1) for dy in (-1, 1)
+        if 1 <= point.x + dx <= 15 and 1 <= point.y + dy <= 15
+    )
+
+
+def _accessible_parking(slots: list[str | None], squares: dict[str, str]) -> set[int]:
+    return {
+        index for index, piece in enumerate(slots)
+        if piece is not None and any(
+            square not in squares for square in _parking_approaches(ParkingSlot(index))
+        )
+    }
+
+
 def _physical_map(squares: dict[str, str], slots: list[str | None]) -> str:
     # encode_map inspects piece_map only; this temporary board need not be a
     # legal chess position while a multi-transfer move is in progress.
@@ -231,6 +251,39 @@ class PendingMove:
 
 
 @dataclass
+class PendingReset:
+    actions: tuple[Transfer, ...]
+    next_action: int = 0
+    phase: str = "ready"  # ready, in_flight, awaiting_confirmation
+    active_route: tuple[str, str, str] | None = None
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "actions": [_action_to_json(action) for action in self.actions],
+            "next_action": self.next_action,
+            "phase": self.phase,
+            "active_route": list(self.active_route) if self.active_route else None,
+        }
+
+    @classmethod
+    def from_json(cls, value: object) -> PendingReset:
+        if not isinstance(value, dict):
+            raise GameStateError("invalid pending reset")
+        route = value.get("active_route")
+        if route is not None and (not isinstance(route, list) or len(route) != 3 or
+                                  any(not isinstance(token, str) for token in route)):
+            raise GameStateError("invalid reset active route")
+        actions = tuple(_action_from_json(item) for item in value["actions"])
+        if not actions or any(not isinstance(action, Transfer) for action in actions):
+            raise GameStateError("pending reset requires transfer actions")
+        return cls(
+            actions=actions, next_action=value["next_action"],
+            phase=value["phase"],
+            active_route=tuple(route) if route is not None else None,
+        )
+
+
+@dataclass
 class GameState:
     board_fen: str
     committed_parking: ParkingInventory
@@ -238,6 +291,7 @@ class GameState:
     physical_parking: list[str | None]
     moves: list[str] = field(default_factory=list)
     pending: PendingMove | None = None
+    reset: PendingReset | None = None
     events: list[dict[str, object]] = field(default_factory=list)
     initial_fen: str | None = None
 
@@ -276,6 +330,32 @@ class GameState:
             raise GameStateError("committed chess position is invalid")
         if not isinstance(self.moves, list) or any(not isinstance(move, str) for move in self.moves):
             raise GameStateError("invalid move history")
+        if self.reset is not None:
+            if self.pending is not None:
+                raise GameStateError("move and board reset cannot both be pending")
+            if self.initial_fen != chess.Board().fen():
+                raise GameStateError("board reset requires a standard-start game")
+            reset = self.reset
+            if (not reset.actions or any(not isinstance(action, Transfer)
+                                         for action in reset.actions)):
+                raise GameStateError("pending reset requires transfer actions")
+            if (type(reset.next_action) is not int or
+                    not 0 <= reset.next_action < len(reset.actions) or
+                    reset.phase not in {"ready", "in_flight", "awaiting_confirmation"}):
+                raise GameStateError("invalid reset action cursor")
+            if (reset.phase == "ready") != (reset.active_route is None):
+                raise GameStateError("inconsistent reset phase and route")
+            squares = self.expected_physical_squares()
+            slots = list(self.committed_parking.slots)
+            for action in reset.actions[:reset.next_action]:
+                _apply_action(squares, slots, action)
+            if squares != self.physical_squares or slots != self.physical_parking:
+                raise GameStateError("physical checkpoint differs from confirmed reset prefix")
+            for action in reset.actions[reset.next_action:]:
+                _apply_action(squares, slots, action)
+            if squares != _board_pieces(chess.Board()) or any(slots):
+                raise GameStateError("reset actions do not restore the standard position")
+            return
         if self.pending is None:
             if (self.physical_squares != self.expected_physical_squares() or
                     tuple(self.physical_parking) != self.committed_parking.slots):
@@ -321,17 +401,18 @@ class GameState:
             "physical_parking": self.physical_parking,
             "moves": self.moves,
             "pending": self.pending.to_json() if self.pending else None,
+            "reset": self.reset.to_json() if self.reset else None,
             "events": self.events,
         }
 
     @classmethod
     def from_json(cls, value: object) -> GameState:
         if (not isinstance(value, dict) or type(value.get("version")) is not int or
-                value["version"] not in {1, 2, STATE_VERSION}):
+                value["version"] not in {1, 2, 3, STATE_VERSION}):
             raise GameStateError("unsupported game-state version")
         try:
             version = value["version"]
-            if version == STATE_VERSION and value.get("promotion_rule") != PROMOTION_RULE:
+            if version in {3, STATE_VERSION} and value.get("promotion_rule") != PROMOTION_RULE:
                 raise GameStateError("game-state promotion rule does not match pawn stand-in design")
             history = list(value["moves"])
             if version in {1, 2}:
@@ -371,6 +452,7 @@ class GameState:
                 physical_parking=list(value["physical_parking"]),
                 moves=history,
                 pending=PendingMove.from_json(value["pending"]) if value["pending"] is not None else None,
+                reset=PendingReset.from_json(value["reset"]) if version == STATE_VERSION and value.get("reset") is not None else None,
                 events=list(value.get("events", [])),
                 initial_fen=initial_fen,
             )
@@ -450,6 +532,8 @@ class GameRunner:
 
     def preflight_move(self, uci: str, geometry: RouteGeometry) -> MovePlan:
         """Check *all* legs before starting a multi-transfer move."""
+        if self.state.reset is not None:
+            raise ReconciliationRequired("finish or reconcile the board reset before playing")
         if self.state.pending is not None:
             raise ReconciliationRequired("finish or reconcile the pending move first")
         board = self.state.board()
@@ -505,6 +589,173 @@ class GameRunner:
         self.state.events.append({"event": "move_prepared", "uci": plan.uci})
         self.store.save(self.state)
         return plan
+
+    def preflight_reset(self, geometry: RouteGeometry) -> tuple[Transfer, ...]:
+        """Route a full return to the standard setup before moving anything.
+
+        Wrong pieces on home ranks are staged in the middle. Occupied parking
+        slots must retain a vacant adjacent edge square until retrieved. This
+        also breaks square cycles without requiring a spare parking slot.
+        """
+        if self.state.pending is not None:
+            raise ReconciliationRequired("finish or reconcile the pending move before resetting")
+        if self.state.reset is not None:
+            raise GameStateError("board reset is already prepared")
+        if self.state.initial_fen != chess.Board().fen():
+            raise GameStateError("board reset requires a standard-start game")
+        target = _board_pieces(chess.Board())
+        squares = dict(self.state.physical_squares)
+        slots = list(self.state.physical_parking)
+        if Counter([*squares.values(), *(piece for piece in slots if piece)]) != Counter(target.values()):
+            raise GameStateError("physical pieces do not match the 32 standard starting pieces")
+        if squares == target and not any(slots):
+            return ()
+
+        actions: list[Transfer] = []
+        staging = tuple(
+            f"{file}{rank}" for rank in "3456" for file in "abcdefgh"
+        )
+
+        def try_transfer(source: BoardSquare | ParkingSlot, destination: BoardSquare) -> bool:
+            piece = _piece_at(squares, slots, source)
+            if piece is None or _piece_at(squares, slots, destination) is not None:
+                return False
+            transfer = Transfer(piece, source, destination, "reset_board")
+            try:
+                self._route_transfer(transfer, squares, slots, geometry)
+            except RouteError:
+                return False
+            _apply_action(squares, slots, transfer)
+            actions.append(transfer)
+            return True
+
+        def stage(source_name: str, *, opening: int | None = None) -> bool:
+            source = BoardSquare(source_name)
+            before = _accessible_parking(slots, squares)
+            source_point = location_point(source)
+            destinations = sorted(
+                (name for name in staging if name not in squares and name != source_name),
+                key=lambda name: (
+                    sum(name in _parking_approaches(ParkingSlot(index))
+                        for index, piece in enumerate(slots) if piece is not None),
+                    (location_point(BoardSquare(name)).x - source_point.x) ** 2 +
+                    (location_point(BoardSquare(name)).y - source_point.y) ** 2,
+                    name,
+                ),
+            )
+            for name in destinations:
+                destination = BoardSquare(name)
+                trial_squares = dict(squares)
+                trial_slots = list(slots)
+                _apply_action(trial_squares, trial_slots,
+                              Transfer(squares[source_name], source, destination, "reset_board"))
+                after = _accessible_parking(trial_slots, trial_squares)
+                if not before.issubset(after) or (opening is not None and opening not in after):
+                    continue
+                if try_transfer(source, destination):
+                    return True
+            return False
+
+        # Already-correct home pieces stay put unless they block a parked piece.
+        for name in sorted(tuple(squares)):
+            if name[1] in "1278" and squares[name] != target.get(name):
+                if not stage(name):
+                    raise NoRouteError(f"cannot stage {name} for board reset")
+
+        # A corner parking slot has only one board-side exit. Temporarily stage
+        # whichever edge piece blocks an occupied slot before retrieval.
+        while True:
+            accessible = _accessible_parking(slots, squares)
+            blocked = [index for index, piece in enumerate(slots)
+                       if piece is not None and index not in accessible]
+            if not blocked:
+                break
+            slot_id = blocked[0]
+            if not any(
+                stage(name, opening=slot_id)
+                for name in _parking_approaches(ParkingSlot(slot_id)) if name in squares
+            ):
+                raise NoRouteError(f"cannot open an approach to parking slot {slot_id}")
+
+        while any(slots):
+            accessible = _accessible_parking(slots, squares)
+            choices = sorted(
+                (index for index, piece in enumerate(slots) if piece is not None),
+                key=lambda index: (
+                    sum(name not in squares for name in _parking_approaches(ParkingSlot(index))),
+                    index,
+                ),
+            )
+            chosen = False
+            for index in choices:
+                if index not in accessible:
+                    continue
+                source = ParkingSlot(index)
+                source_point = location_point(source)
+                destinations = sorted(
+                    (name for name, symbol in target.items()
+                     if symbol == slots[index] and name not in squares),
+                    key=lambda name: (
+                        (location_point(BoardSquare(name)).x - source_point.x) ** 2 +
+                        (location_point(BoardSquare(name)).y - source_point.y) ** 2,
+                        name,
+                    ),
+                )
+                for name in destinations:
+                    destination = BoardSquare(name)
+                    trial_squares = dict(squares)
+                    trial_slots = list(slots)
+                    _apply_action(trial_squares, trial_slots,
+                                  Transfer(slots[index], source, destination, "reset_board"))
+                    if len(_accessible_parking(trial_slots, trial_squares)) != sum(
+                        piece is not None for piece in trial_slots
+                    ):
+                        continue
+                    if try_transfer(source, destination):
+                        chosen = True
+                        break
+                if chosen:
+                    break
+            if not chosen:
+                raise NoRouteError("cannot retrieve remaining parked pieces without trapping a slot")
+
+        while squares != target:
+            chosen = False
+            for name in sorted(tuple(squares)):
+                if squares[name] == target.get(name):
+                    continue
+                source = BoardSquare(name)
+                source_point = location_point(source)
+                destinations = sorted(
+                    (home for home, symbol in target.items()
+                     if symbol == squares[name] and home not in squares),
+                    key=lambda home: (
+                        (location_point(BoardSquare(home)).x - source_point.x) ** 2 +
+                        (location_point(BoardSquare(home)).y - source_point.y) ** 2,
+                        home,
+                    ),
+                )
+                for home in destinations:
+                    if try_transfer(source, BoardSquare(home)):
+                        chosen = True
+                        break
+                if chosen:
+                    break
+            if not chosen:
+                raise NoRouteError("cannot return staged pieces to the standard setup")
+        if any(slots):
+            raise GameStateError("reset plan left occupied parking")
+        return tuple(actions)
+
+    def prepare_reset(self, geometry: RouteGeometry) -> tuple[Transfer, ...]:
+        actions = self.preflight_reset(geometry)
+        if not actions:
+            self._finish_reset()
+            return ()
+        self.state.reset = PendingReset(actions)
+        self.state.events.append({"event": "reset_prepared", "transfers": len(actions)})
+        self.store.save(self.state)
+        return actions
 
     def execute_pending(
         self, link: CarryLink, geometry: RouteGeometry,
@@ -566,6 +817,100 @@ class GameRunner:
             pending.active_route = None
             self._commit_if_complete()
             self.store.save(self.state)
+
+    def execute_reset(
+        self, link: CarryLink, geometry: RouteGeometry,
+        confirm: Callable[[Transfer], bool],
+        approve_route: Callable[[Transfer, CarryRoute, tuple[str, str, str]], bool] | None = None,
+        *, confirmation_source: str = "operator",
+    ) -> None:
+        if confirmation_source not in {"operator", "controller_done", "simulation"}:
+            raise ValueError("invalid confirmation source")
+        pending = self.state.reset
+        if pending is None:
+            raise GameStateError("no pending board reset")
+        if pending.phase != "ready":
+            raise ReconciliationRequired("inspect and resolve the uncertain reset transfer first")
+        while pending.next_action < len(pending.actions):
+            action = pending.actions[pending.next_action]
+            route = self._route_transfer(
+                action, self.state.physical_squares, self.state.physical_parking,
+                geometry,
+            )
+            wire = encode_carry(route)
+            if approve_route is not None and not approve_route(action, route, wire):
+                raise MoveDeferred("reset route was not approved; no new CARRY was sent")
+            link.set_map(self.current_map())
+            pending.phase = "in_flight"
+            pending.active_route = wire
+            self.state.events.append({
+                "event": "reset_carry_started", "action": pending.next_action,
+                "wire": list(wire), "clearance_override": route.clearance_ignored,
+            })
+            self.store.save(self.state)
+            completion = link.carry(*wire)
+            pending.phase = "awaiting_confirmation"
+            self.state.events.append({
+                "event": "reset_carry_done", "action": pending.next_action,
+                "command_id": getattr(completion, "command_id", None),
+            })
+            self.store.save(self.state)
+            if not confirm(action):
+                raise ReconciliationRequired("operator did not confirm reset transfer")
+            _apply_action(self.state.physical_squares, self.state.physical_parking, action)
+            self.state.events.append({
+                "event": "reset_action_confirmed", "action": pending.next_action,
+                "confirmation_source": confirmation_source,
+            })
+            pending.next_action += 1
+            pending.phase = "ready"
+            pending.active_route = None
+            if pending.next_action == len(pending.actions):
+                self._finish_reset()
+            else:
+                self.store.save(self.state)
+
+    def resolve_uncertain_reset(self, outcome: str) -> None:
+        """Record an inspected source or destination result for the active reset carry."""
+        pending = self.state.reset
+        if pending is None or pending.phase == "ready":
+            raise GameStateError("no uncertain reset transfer to resolve")
+        if outcome not in {"source", "destination"}:
+            raise ValueError("outcome must be source or destination")
+        action = pending.actions[pending.next_action]
+        if outcome == "destination":
+            _apply_action(self.state.physical_squares, self.state.physical_parking, action)
+            pending.next_action += 1
+        self.state.events.append({
+            "event": "reset_action_reconciled", "action": (
+                pending.next_action if outcome == "source" else pending.next_action - 1
+            ), "outcome": outcome,
+        })
+        pending.phase = "ready"
+        pending.active_route = None
+        if pending.next_action == len(pending.actions):
+            self._finish_reset()
+        else:
+            self.store.save(self.state)
+
+    def abort_reset_after_restore(self) -> None:
+        """Discard a reset only after manually restoring the pre-reset position."""
+        if self.state.reset is None:
+            raise GameStateError("no pending board reset")
+        self.state.physical_squares = self.state.expected_physical_squares()
+        self.state.physical_parking = list(self.state.committed_parking.slots)
+        self.state.reset = None
+        self.state.events.append({"event": "reset_aborted_after_manual_restore"})
+        self.store.save(self.state)
+
+    def _finish_reset(self) -> None:
+        if (self.state.physical_squares != _board_pieces(chess.Board()) or
+                any(self.state.physical_parking)):
+            raise GameStateError("reset cannot finish before every piece is home")
+        ply_count = len(self.state.moves)
+        self.state = GameState.new()
+        self.state.events.append({"event": "board_reset_completed", "previous_plies": ply_count})
+        self.store.save(self.state)
 
     def resolve_uncertain_action(self, outcome: str) -> None:
         """Record an operator-verified source or destination result.

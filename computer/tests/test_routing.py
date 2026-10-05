@@ -1,5 +1,6 @@
 import unittest
 from functools import partial
+from math import hypot
 
 import chess
 
@@ -15,6 +16,7 @@ from chess_table_host import (
     RouteGeometry,
     RouteTooLongError,
     Transfer,
+    encode_carry,
     find_reachable_parking_slot,
     parking_point,
     plan_move,
@@ -101,6 +103,42 @@ class RoutingTests(unittest.TestCase):
                 occupied_parking_slots=(),
                 geometry=self._geometry(32, 32),
             )
+
+    def test_open_diagonals_take_straight_short_routes(self) -> None:
+        for source_name, destination_name in (("c1", "h6"), ("e2", "g4")):
+            source, destination = BoardSquare(source_name), BoardSquare(destination_name)
+            route = plan_transfer_route(
+                Transfer("B", source, destination, "move"),
+                occupied_squares=(source,), occupied_parking_slots=(),
+                geometry=self._geometry(18, 18), max_waypoints=12,
+            )
+            start, end = route.points[0], route.points[-1]
+            self.assertEqual(len(route.points), 4)
+            self.assertTrue(all(
+                (point.x - start.x) * (end.y - start.y) ==
+                (point.y - start.y) * (end.x - start.x)
+                for point in route.points
+            ))
+            self.assertAlmostEqual(
+                self._route_distance(route.points),
+                hypot(end.x - start.x, end.y - start.y),
+            )
+            self.assertLessEqual(len(route.points), 12)
+            self.assertEqual(len(encode_carry(route)[2]), 2 * len(route.points))
+            self._assert_firmware_segments(route.points, {start})
+
+    def test_occupied_center_blocks_direct_diagonal_even_with_clearance_override(self) -> None:
+        source, destination, blocker = (BoardSquare(name) for name in ("c1", "h6", "d2"))
+        transfer = Transfer("B", source, destination, "move")
+        direct = hypot(10, 10)
+        for ignore_clearance in (False, True):
+            route = plan_transfer_route(
+                transfer, occupied_squares=(source, blocker), occupied_parking_slots=(),
+                geometry=self._geometry(18, 18),
+                ignore_piece_clearance=ignore_clearance, max_waypoints=12,
+            )
+            self.assertGreater(self._route_distance(route.points), direct)
+            self._assert_firmware_segments(route.points, {self._point("c1"), self._point("d2")})
 
     def test_explicit_clearance_override_routes_crowded_move(self) -> None:
         squares = tuple(BoardSquare(chess.square_name(square)) for square in chess.Board().piece_map())
@@ -194,14 +232,14 @@ class RoutingTests(unittest.TestCase):
                 occupied_parking_slots=(ParkingSlot(1), ParkingSlot(18)),
             )
 
-    def test_vacant_edge_square_unlocks_corner_between_occupied_slots(self) -> None:
+    def test_diagonal_grid_link_unlocks_corner_between_occupied_slots(self) -> None:
         route = plan_transfer_route(
             Transfer("P", ParkingSlot(0), BoardSquare("e4"), "retrieve"),
             occupied_squares=(),
             occupied_parking_slots=(ParkingSlot(0), ParkingSlot(1), ParkingSlot(18)),
         )
-        self.assertEqual(route.points[:3], (
-            HalfSquarePoint(0, 0), HalfSquarePoint(1, 1), HalfSquarePoint(2, 2),
+        self.assertEqual(route.points[:2], (
+            HalfSquarePoint(0, 0), HalfSquarePoint(2, 2),
         ))
         self.assertNotIn(HalfSquarePoint(2, 0), route.points)
         self.assertNotIn(HalfSquarePoint(0, 2), route.points)
@@ -313,45 +351,48 @@ class RoutingTests(unittest.TestCase):
                 transfer, occupied_squares=(BoardSquare("e4"),),
                 occupied_parking_slots=(), max_waypoints=2
             )
-        self.assertEqual(caught.exception.required_waypoints, len(route.points))
+        self.assertEqual(caught.exception.required_waypoints, 3)
         self.assertEqual(caught.exception.max_waypoints, 2)
 
-    def test_waypoint_budget_finds_longer_route_with_fewer_turns(self) -> None:
-        occupied_squares = {BoardSquare(name) for name in (
-            "c1", "d1", "e6", "f8", "g6", "g7", "h4",
-        )}
-        occupied_slots = {ParkingSlot(slot) for slot in (15, 18, 21, 27, 28)}
-        transfer = Transfer("P", BoardSquare("d1"), ParkingSlot(30), "park")
+    def test_waypoint_budget_finds_longer_route_with_fewer_waypoints(self) -> None:
+        source = BoardSquare("e4")
+        transfer = Transfer("P", source, ParkingSlot(0), "park")
         geometry = self._geometry(18, 18)
 
-        shortest_steps = plan_transfer_route(
-            transfer, occupied_squares=occupied_squares,
-            occupied_parking_slots=occupied_slots, geometry=geometry,
+        shortest_distance = plan_transfer_route(
+            transfer, occupied_squares=(source,),
+            occupied_parking_slots=(), geometry=geometry,
         )
         within_budget = plan_transfer_route(
-            transfer, occupied_squares=occupied_squares,
-            occupied_parking_slots=occupied_slots, geometry=geometry,
-            max_waypoints=7,
+            transfer, occupied_squares=(source,),
+            occupied_parking_slots=(), geometry=geometry,
+            max_waypoints=3,
         )
-        self.assertEqual(len(shortest_steps.points), 8)
-        self.assertEqual(len(within_budget.points), 7)
+        self.assertEqual(len(shortest_distance.points), 4)
+        self.assertEqual(len(within_budget.points), 3)
+        self.assertGreater(
+            self._route_distance(within_budget.points),
+            self._route_distance(shortest_distance.points),
+        )
         self._assert_firmware_segments(
-            within_budget.points,
-            {self._point(square.name) for square in occupied_squares} |
-            {parking_point(slot) for slot in occupied_slots},
+            within_budget.points, {self._point("e4")},
         )
         with self.assertRaises(RouteTooLongError) as caught:
             plan_transfer_route(
-                transfer, occupied_squares=occupied_squares,
-                occupied_parking_slots=occupied_slots, geometry=geometry,
-                max_waypoints=6,
+                transfer, occupied_squares=(source,),
+                occupied_parking_slots=(), geometry=geometry,
+                max_waypoints=2,
             )
-        self.assertEqual(caught.exception.required_waypoints, 7)
+        self.assertEqual(caught.exception.required_waypoints, 3)
 
     @staticmethod
     def _point(name: str) -> HalfSquarePoint:
         return HalfSquarePoint(2 * (ord(name[0]) - ord("a")) + 1,
                                2 * (int(name[1]) - 1) + 1)
+
+    @staticmethod
+    def _route_distance(points: tuple[HalfSquarePoint, ...]) -> float:
+        return sum(hypot(b.x - a.x, b.y - a.y) for a, b in zip(points, points[1:]))
 
     @staticmethod
     def _geometry(moving: float, occupied: float, margin: float = 0,
@@ -382,8 +423,15 @@ class RoutingTests(unittest.TestCase):
                 self.assertFalse(start_square)
                 self.assertTrue(
                     (dx == 0 and dy != 0 and dy % 2 == 0) or
-                    (dy == 0 and dx != 0 and dx % 2 == 0),
+                    (dy == 0 and dx != 0 and dx % 2 == 0) or
+                    (abs(dx) == abs(dy) and dx != 0 and dx % 2 == 0),
                     (start, end),
+                )
+            for center in occupied - {points[0]}:
+                cx, cy = center.x - start.x, center.y - start.y
+                self.assertFalse(
+                    cx * dy == cy * dx and 0 <= cx * dx + cy * dy <= dx * dx + dy * dy,
+                    (start, end, center),
                 )
 
 

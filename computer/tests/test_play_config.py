@@ -12,11 +12,45 @@ import chess
 from chess_table_host.game import GameRunner, GameState, GameStateError, JsonGameStore, MoveDeferred
 from chess_table_host.play import (
     DEFAULT_CONFIG, LoggedSerialStream, SimulatedLink, _geometry_from_file, _load_config,
-    _play_moves, _reconcile_at_start, _resolve_engine_path, _route_geometry, main,
+    _connect_physical, _play_moves, _reconcile_at_start, _resolve_engine_path, _route_geometry, main,
 )
 
 
 class PlayConfigurationTests(unittest.TestCase):
+    def test_old_firmware_without_diagonal_capability_is_rejected_before_homing(self) -> None:
+        class OldFirmware:
+            def __init__(self) -> None:
+                self.stream = io.BytesIO()
+                self.homed = False
+                self.referenced = False
+                self.closed = False
+
+            def hello(self):
+                return SimpleNamespace(
+                    version=1,
+                    capabilities={"STATUS", "HOME", "REF", "MAP", "CARRY", "GEOM"},
+                )
+
+            def home(self):
+                self.homed = True
+
+            def reference(self):
+                self.referenced = True
+
+            def close(self):
+                self.closed = True
+                self.stream.close()
+
+        firmware = OldFirmware()
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch("chess_table_host.play.open_serial", return_value=firmware):
+                with self.assertRaisesRegex(GameStateError, "CARRY_DIAG"):
+                    _connect_physical("COM3", full_home=False,
+                                      serial_log=Path(temporary) / "serial.jsonl")
+        self.assertFalse(firmware.homed)
+        self.assertFalse(firmware.referenced)
+        self.assertTrue(firmware.closed)
+
     def test_self_play_finishes_checkmate_without_human_move_or_confirmation_prompts(self) -> None:
         planned = ("f2f3", "e7e5", "g2g4", "d8h4")
 

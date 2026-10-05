@@ -2,7 +2,8 @@
 
 Arduino Uno R3 / PlatformIO firmware for two M415B drivers, TR6x12 actuators,
 1/8 microstepping, four normally-open limit switches, and an active-HIGH magnet
-relay. Travel is 150 mm/s with the magnet off; carrying is 75 mm/s. No motion
+relay. Travel is 150 mm/s with the magnet off; carrying is 60 mm/s with
+400 mm/s² acceleration. No motion
 starts at boot. The older one-letter motion and fixture commands were removed
 to fit general routes on the Uno; their implementation remains in Git history.
 
@@ -31,7 +32,8 @@ emits `!BOOT V=1`; the host must discard its pending request and reconcile
 position and occupancy after a reset. Human-readable diagnostic lines may
 appear between frames.
 
-`HELLO` reports `V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,SAVE,GEOM`.
+`HELLO` reports `V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,SAVE,GEOM`.
+`CARRY_DIAG` means the Uno accepts 45-degree grid-to-grid route segments.
 `STATUS` reports `REF`, `BUSY`, `MAP`, and `SAVED` as 0/1 fields.
 `GEOM` requires a live reference and reports measured X/Y travel, board
 origins OX/OY, configured pitch P, inset I, and pulses/mm PPM in millimeters
@@ -58,7 +60,8 @@ half-square X and Y coordinates: `0-9A-G` encode 0..16. For example,
 `CARRY 35 64 79680800` moves d5 to P00 via (7,9), (6,8), (0,8), (0,0).
 Board square centers have odd X/Y; grid intersections and parking slots have
 even X/Y. Diagonal center-to-grid links must be exactly one half-square in
-both axes. Grid-to-grid links must be orthogonal. A vacant edge-square center
+both axes. Grid-to-grid links may be orthogonal or 45-degree diagonal. A vacant
+edge-square center
 adjacent to the parking endpoint may be an intermediate waypoint.
 
 Before moving, the Uno checks the complete path, matching endpoints, measured
@@ -87,6 +90,13 @@ route segment starts a fresh 3 ms window, so a switch held before movement
 still stops it once motion begins. Commanded position and every waypoint must
 remain within the measured 2 mm software inset. A software stop is not a
 hardware emergency stop.
+
+For CARRY, the gentler profile applies after pickup. Empty carriage
+travel remains at 150 mm/s and 1000 mm/s²; HOME/REF use their separate seek
+and latch speeds. The 15-second watchdog applies to each segment, including
+the longest possible grid diagonal. Verify the gentler loaded profile with a
+short carry before a full physical game; the right setting depends on the
+piece/glass friction and magnetic grip.
 
 The board pitch is 31.25 mm. a1 is nearest MIN/MIN; files increase in +X and
 ranks in +Y. Parking slots are perimeter grid intersections: P00..P08 bottom,
@@ -120,7 +130,7 @@ node tests/machine-sim.cjs --small-table
 ```
 
 Run the default test before `--restore`; it saves a simulated EEPROM image.
-The compiled Uno build uses **28,698 / 32,256 flash bytes** and
-**1,005 / 2,048 static RAM bytes**. Tests execute the real HEX in AVR8js with
+Check the PlatformIO flash and static RAM totals against the Uno limits after
+each firmware change. Tests execute the real HEX in AVR8js with
 simulated GPIO, switches, motors, relay, and EEPROM. They do not drive the
 physical table or resolve the reported release reset.
