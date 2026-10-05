@@ -15,6 +15,7 @@ from pathlib import Path
 import shutil
 import sys
 import threading
+from typing import Callable
 
 import chess
 import chess.engine
@@ -27,6 +28,7 @@ from .planner import Action, BoardSquare, ManualReplacement, ParkingSlot, PlanEr
 from .routing import RouteError, RouteGeometry
 from .serial_link import ControllerGeometry, LinkError, open_serial
 from .serial_link import Completion
+from .session_lock import SessionLock
 
 
 DEFAULT_CONFIG = Path(__file__).resolve().parent.parent / "config.json"
@@ -275,10 +277,16 @@ def _route_geometry(
     )
 
 
-def _connect_physical(port: str, *, full_home: bool, serial_log: Path):
+def _connect_physical(
+    port: str, *, full_home: bool, serial_log: Path,
+    on_open: Callable[[object], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+):
     link = open_serial(port)
     try:
         link.stream = LoggedSerialStream(link.stream, serial_log)
+        if on_open is not None:
+            on_open(link)
         print("Serial transcript:", serial_log)
         hello = link.hello()
         required = {"STATUS", "HOME", "REF", "MAP", "CARRY", "CARRY_DIAG", "GEOM"}
@@ -287,6 +295,8 @@ def _connect_physical(port: str, *, full_home: bool, serial_log: Path):
         status = link.status()
         print(f"Controller: V={hello.version}, REF={int(status.referenced)}, "
               f"SAVED={int(status.saved_geometry)}")
+        if cancelled is not None and cancelled():
+            raise MoveDeferred("connection stopped before HOME or REF")
         if full_home or not status.saved_geometry:
             print("Running full HOME; watch both axes and keep the power cutoff reachable.")
             link.home()
@@ -551,7 +561,7 @@ def _list_ports(configured_port: str) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help="game settings JSON (default: computer/config.json)")
@@ -681,6 +691,33 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if link is not None:
             link.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Hold the same checkpoint/port locks as the browser host for this run."""
+    preliminary = argparse.ArgumentParser(add_help=False)
+    preliminary.add_argument("--state", type=Path)
+    preliminary.add_argument("--port")
+    preliminary.add_argument("--simulate", action="store_true")
+    preliminary.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    preliminary.add_argument("--list-ports", action="store_true")
+    options, _ = preliminary.parse_known_args(argv)
+    if options.state is None or options.list_ports:
+        return _main(argv)
+    if options.simulate:
+        port = None
+    else:
+        try:
+            port = options.port or _load_config(options.config)["serial_port"]
+        except GameStateError:
+            # Let the full parser report its usual configuration error.
+            return _main(argv)
+    try:
+        with SessionLock(options.state, port):
+            return _main(argv)
+    except RuntimeError as exc:
+        print(f"Game session unavailable: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

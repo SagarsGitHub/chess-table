@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Chess Table</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">♞</span>
+        <div><strong>CHESS TABLE</strong><small>Physical board control</small></div>
+      </div>
+      <div class="topbar-actions">
+        <span id="connection" class="connection"><span class="connection-dot"></span>Connecting</span>
+        <button id="stop-button" class="button button-stop" type="button" title="Pauses after the current transfer; use the physical power cutoff for an immediate halt." disabled>Pause after transfer</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">LOCAL GAME CONSOLE <span class="eyebrow-line"></span> <span id="hardware-mode">CONNECTING</span></p>
+          <h1 id="page-title">The board is yours.</h1>
+          <p class="intro-copy">Play on the table, follow every move, and keep the physical pieces in sync with the saved game.</p>
+        </div>
+        <div id="headline-state" class="headline-state" aria-live="polite">Loading game…</div>
+      </section>
+
+      <div id="notice" class="notice" role="alert" hidden></div>
+
+      <div class="workspace">
+        <section class="board-panel panel" aria-labelledby="board-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">01 / PLAY</p>
+              <h2 id="board-heading">Board</h2>
+            </div>
+            <div class="board-tools">
+              <div class="view-toggle" role="group" aria-label="Board view">
+                <button id="view-physical" type="button" aria-pressed="false">Expected physical</button>
+                <button id="view-legal" type="button" aria-pressed="true">Legal position</button>
+              </div>
+              <button id="flip-button" class="button button-subtle" type="button" aria-label="Flip board orientation">⇅ <span>Flip board</span></button>
+            </div>
+          </div>
+
+          <div class="board-frame">
+            <div id="board" class="board" role="group" aria-label="Chess board, white at bottom"></div>
+          </div>
+          <div class="board-footer">
+            <div id="turn-indicator" class="turn-indicator"><span class="turn-piece">♙</span><span>Waiting for position</span></div>
+            <p id="board-help" class="board-help">Select a piece, then a highlighted destination.</p>
+          </div>
+          <p id="board-view-description" class="board-view-description">Legal chess position</p>
+          <p class="disclosure">Board and parking show the saved, expected position. This table does not sense pieces.</p>
+        </section>
+
+        <aside class="sidebar">
+          <section id="recovery-panel" class="panel recovery-panel" aria-labelledby="recovery-heading" hidden>
+            <div class="panel-heading">
+              <div><p class="section-kicker">ATTENTION REQUIRED</p><h2 id="recovery-heading">Inspect the board</h2></div>
+              <span class="alert-icon" aria-hidden="true">!</span>
+            </div>
+            <p id="recovery-detail" class="recovery-detail"></p>
+            <div id="recovery-action" class="recovery-action"></div>
+            <p class="recovery-instruction">Check the piece, its source and destination, and all affected parking slots against the physical board before choosing the outcome.</p>
+            <label class="inspection-check"><input id="inspected" type="checkbox"><span>I inspected and corrected the physical position</span></label>
+            <div class="recovery-options">
+              <button class="button button-recovery" type="button" data-outcome="source" disabled>Piece at source</button>
+              <button class="button button-recovery" type="button" data-outcome="destination" disabled>Piece at destination</button>
+              <button class="button button-recovery button-abort" type="button" data-outcome="abort" disabled>Restored prior position</button>
+            </div>
+          </section>
+
+          <section class="panel session-panel" aria-labelledby="session-heading">
+            <div class="panel-heading">
+              <div><p class="section-kicker">02 / SESSION</p><h2 id="session-heading">Game controls</h2></div>
+              <span id="phase-tag" class="phase-tag">Loading</span>
+            </div>
+            <p id="session-status" class="session-status">Connecting to the host…</p>
+            <div id="transfer-status" class="transfer-status" hidden>
+              <div class="transfer-heading"><span>Current transfer</span><span id="transfer-progress"></span></div>
+              <strong id="transfer-action"></strong>
+              <p id="transfer-route" class="transfer-route" hidden></p>
+            </div>
+            <div id="session-start" class="session-start">
+              <label for="mode-select" class="field-label">Play mode</label>
+              <select id="mode-select" class="select">
+                <option value="human_white">Play Stockfish · White</option>
+                <option value="human_black">Play Stockfish · Black</option>
+                <option value="self_play">Stockfish vs Stockfish</option>
+                <option value="manual_both">Manual · Both sides</option>
+              </select>
+              <button id="start-button" class="button button-primary" type="button" disabled>Start game <span aria-hidden="true">↗</span></button>
+            </div>
+            <div id="session-live" class="session-live" hidden>
+              <div class="session-metrics">
+                <div><span>Mode</span><strong id="active-mode">—</strong></div>
+                <div><span>Move</span><strong id="move-count">—</strong></div>
+              </div>
+              <button id="reset-button" class="button button-secondary" type="button" disabled>Reset physical board</button>
+            </div>
+            <p id="connection-detail" class="connection-detail"></p>
+            <details class="setup-details">
+              <summary>Connection &amp; files</summary>
+              <dl id="setup-summary" class="setup-summary"></dl>
+              <p>To change these in WSL, restart the host with <code>--state</code>, <code>--port</code> (or <code>--simulate</code>), and <code>--engine</code>, then reload this page.</p>
+            </details>
+          </section>
+
+          <section class="panel parking-panel" aria-labelledby="parking-heading">
+            <div class="panel-heading">
+              <div><p class="section-kicker">03 / INVENTORY</p><h2 id="parking-heading">Piece parking</h2></div>
+              <span id="parking-count" class="parking-count">0 / 32</span>
+            </div>
+            <div id="parking" class="parking-grid" aria-label="Expected occupied parking slots"></div>
+            <p class="small-note">Slot contents come from the saved checkpoint.</p>
+          </section>
+
+          <section class="panel history-panel" aria-labelledby="history-heading">
+            <div class="panel-heading">
+              <div><p class="section-kicker">04 / RECORD</p><h2 id="history-heading">Move history</h2></div>
+              <span id="history-count" class="history-count">0 plies</span>
+            </div>
+            <div id="history" class="history-list" aria-live="polite"><p class="empty-history">Moves will appear here.</p></div>
+          </section>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <div id="promotion-dialog" class="dialog-backdrop" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="promotion-heading" aria-describedby="promotion-description">
+      <p class="section-kicker">CHOOSE PROMOTION</p>
+      <h2 id="promotion-heading">Promote the pawn</h2>
+      <p id="promotion-description">The pawn stays on the physical board. Choose its legal role in the game.</p>
+      <div id="promotion-options" class="promotion-options"></div>
+      <button id="promotion-cancel" class="button button-subtle" type="button">Cancel</button>
+    </div>
+  </div>
+</body>
+</html>

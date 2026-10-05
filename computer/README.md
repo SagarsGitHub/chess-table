@@ -89,6 +89,9 @@ planner, and serial link. It preflights every transfer in a move before starting
 the first one, chooses a reachable parking slot, and saves an atomic JSON
 checkpoint after each completed physical action. Captures keep a separate
 physical position while the victim is parked and the attacker has not moved.
+The local browser GUI uses the same game runner and checkpoints; see the
+[WSL GUI game runbook](../docs/GUI_GAME.md) for simulated and physical launch
+commands, recovery, and board reset.
 Physical sessions save timestamped TX/RX serial frames beside the checkpoint
 as `<state-name>.serial.jsonl`; `--serial-log` changes that path.
 An interrupted action is never replayed automatically; on resume the operator

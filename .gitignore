@@ -220,3 +220,4 @@ cython_debug/
 *.elf
 **/node_modules/
 /computer/runs/
+*.session.lock
