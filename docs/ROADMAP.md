@@ -11,6 +11,8 @@ The target is a chess table that can complete a full game, park captured pieces 
 | 4. Game orchestration | Integrate legal-move plans with transport. Handle capture, en passant, castling, and promotion through a documented physical exchange policy. Persist game and parking inventory. Start with manual UCI input for human moves. | A complete local game can be played against a computer engine without running out of parking or losing board/slot agreement. Fault recovery is exercised mid-capture. |
 | 5. Sensing and polish | Add or integrate physical piece detection if desired, then UI/clock/online features after the local game is stable. | Detected moves and mismatches are verified against legal state; regression and physical game logs are saved. |
 
+Stage 1 is tracked in [issue #1](https://github.com/SagarsGitHub/chess-table/issues/1).
+
 ## Immediate next actions
 
 1. Record the relay module model, electromagnet voltage/current, wiring, and a serial log around the reported release reset. Resolve this before loaded route development.
