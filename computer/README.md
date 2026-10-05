@@ -80,14 +80,51 @@ both `ACK` and terminal `DONE`/`ERR`; it treats reset, timeout, STOP, and
 ambiguous motion faults as requiring physical reconciliation. See
 [`docs/PROTOCOL.md`](../docs/PROTOCOL.md) for exact frames.
 
+## Supervised game runner
+
+`python -m chess_table_host.play` joins the legal-move planner, measured route
+planner, and serial link. It preflights every transfer in a move before starting
+the first one, chooses a reachable parking slot, and saves an atomic JSON
+checkpoint after each confirmed physical action. Captures keep a separate
+physical position while the victim is parked and the attacker has not moved.
+Physical sessions save timestamped TX/RX serial frames beside the checkpoint
+as `<state-name>.serial.jsonl`; `--serial-log` changes that path.
+An interrupted action is never replayed automatically; on resume the operator
+must inspect the board and choose whether the piece is at the source or
+destination (or restore the entire pre-move position). It asks for confirmation
+after every `DONE CARRY`, because the controller cannot sense piece placement.
+
+The checked-in [`config.json`](config.json) defaults to serial port `COM3`,
+Stockfish in `~/Documents/stockfish`, 18 mm moving and standing diameters, and
+a 0 mm margin. Edit that file, pass another JSON file with `--config`, or
+override individual values with `--port`, `--engine`, `--moving-diameter`,
+`--standing-diameter`, and `--margin`. Use
+`python -m chess_table_host.play --list-ports` to find a connected Uno. The
+runner reads fresh `GEOM` from the controller for physical play. The 0 mm
+margin is the current supervised test setting, not a measured path-error
+allowance. The circular
+clearance model may reject a tight route that works in practice; it reports
+the failure without sending a carry.
+
+For a scripted smoke test, use `--moves` with a fresh `--new --state` file; the
+program stops when the script ends. To resume a game against Stockfish, omit
+`--moves`. By default it finds a downloaded engine in the configured
+`stockfish_path` (including the Windows universal binary). Override that
+with `--engine /path/to/stockfish` or another directory on Linux. Human
+moves are entered as UCI text; the table then carries both sides' pieces.
+`--manual-both` is available for testing without an engine. The runner offers
+Stockfish only legal moves that pass physical route preflight.
+
+See [the stage 4 physical test runbook](../docs/STAGE4_TEST_GAME.md) for exact
+simulation, port discovery, physical smoke, and resume commands.
+
 ## Current limits
 
 - General route execution has software and compiled-Uno simulator coverage;
   loaded physical carries and measured clearance are pending the electrical
   reset investigation and hardware acceptance runs.
-- A `MovePlan` predicts state; callers must execute actions in order, verify
-  each physical action, and persist the new state only after success. It has
-  no camera/sensor reconciliation or recovery after a partial move.
+- Game checkpoints and source/destination recovery rely on an operator's
+  inspection. There is no camera or piece sensor to reconcile automatically.
 - Manual promotion requires a spare physical piece and manual handling of the
   removed pawn. The parking inventory does not account for those manual items.
 - The planner covers standard chess, not Chess960 castling. It records piece

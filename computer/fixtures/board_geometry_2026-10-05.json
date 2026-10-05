@@ -1,0 +1,9 @@
+{
+  "x_travel_mm": 249.7350,
+  "y_travel_mm": 251.9850,
+  "board_origin_x_mm": -0.1325,
+  "board_origin_y_mm": 0.9925,
+  "square_pitch_mm": 31.2500,
+  "end_inset_mm": 2.0000,
+  "pulses_per_mm": 133.3333
+}

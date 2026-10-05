@@ -2,7 +2,7 @@
 
 The target is a chess table that can complete a full game, park captured pieces around the perimeter, and recover predictably from interrupted motion. A stage is complete only when its acceptance evidence is recorded in this repository.
 
-**Current sequence:** Stage 1 electrical diagnosis is deferred at the user's request. Stage 2 and the software/simulator portion of stage 3 are implemented: 59 host tests pass, the Uno builds at 28,698 flash and 1,005 static RAM bytes, and compiled-firmware motion/recovery cases pass. Loaded physical acceptance remains open. During actual board movement, a limit closure must persist for 3 ms to stop motion. Switch activity at idle and between movement segments is ignored. Homing uses the first raw edge and confirms it after stopping.
+**Current sequence:** Stage 1 electrical diagnosis is deferred at the user's request. Stage 2 and the software/simulator portion of stage 3 are implemented. The user reports that the empty-board physical test passed and supplied `GEOM X=249.7350 Y=251.9850 OX=-0.1325 OY=0.9925 P=31.2500 I=2.0000 PPM=133.3333`. Stage 4 now has a checkpointed supervised game runner, Stockfish integration, and a five-ply software smoke test; its physical test game and full-game acceptance remain open. During actual board movement, a limit closure must persist for 3 ms to stop motion. Switch activity at idle and between movement segments is ignored. Homing uses the first raw edge and confirms it after stopping.
 
 | Stage | Work | Acceptance evidence |
 | --- | --- | --- |
@@ -17,9 +17,9 @@ Stage 1 is tracked in [issue #1](https://github.com/SagarsGitHub/chess-table/iss
 
 ## Immediate next actions
 
-1. Record the actual `GEOM` reply, moving/standing piece diameters, and magnet path error before calling a route physically clear.
-2. When stage 1 resumes, record the relay module, electromagnet supply/current, wiring, and a serial log around the reported release reset. Resolve it before loaded route runs.
-3. Test loaded routes across all board regions and 32 parking slots, then connect confirmed transfers to the full game orchestrator.
+1. Find the Uno's serial port, run the supervised five-ply physical test in [STAGE4_TEST_GAME.md](STAGE4_TEST_GAME.md), and record each physical confirmation. The user reports 18 mm moving and standing diameters; path/centering error remains to be measured, so 0 mm margin is provisional.
+2. When stage 1 resumes, record the relay module, electromagnet supply/current, wiring, and a serial log around the reported release reset. Resolve it before claiming loaded reliability.
+3. Expand loaded routes across all board regions and 32 parking slots, then complete a local game against Stockfish and exercise mid-capture fault recovery.
 
 ## Open design decisions
 
