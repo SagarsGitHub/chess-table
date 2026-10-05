@@ -12,7 +12,13 @@ The reported live calibration is:
 @4 DONE GEOM X=249.7350 Y=251.9850 OX=-0.1325 OY=0.9925 P=31.2500 I=2.0000 PPM=133.3333
 ```
 
-Record a fresh `GEOM` response after `HOME` or `REF` for each physical session.
+The physical game command handles referencing and geometry automatically. On
+startup it reads controller status, runs `REF` when saved calibration exists
+or `HOME` when it does not, then requests a fresh `GEOM` and prints `Live GEOM`.
+Use `--home` to force a full `HOME` even when calibration is saved. Record that
+printed response and the serial transcript for each physical session; there
+is no separate Serial Monitor step.
+
 The displayed spans and origins are internally consistent with a 250 mm
 printed board: `OX=(X-250)/2` and `OY=(Y-250)/2`. They establish reachable
 square centers, not piece clearance. The outer parking lanes are clamped to
@@ -33,10 +39,12 @@ release.
 ## Five-ply smoke line
 
 Start with the physical standard chess position and all parking slots empty.
-Confirm that the host's FEN and parking inventory match them, that the Uno is
-referenced (`REF=1`), and that the fresh `MAP` is
-`FFFF00000000FFFF00000000`. Preflight the **entire** next move against the
-current occupancy before sending its first `CARRY`.
+Confirm that the host's FEN and parking inventory match them. The runner
+references the Uno before routing and sends `MAP` before each `CARRY`. Check
+the serial transcript for a successful `HOME` or `REF`, a fresh `GEOM`, and
+the initial `MAP` value `FFFF00000000FFFF00000000`. The runner preflights the
+**entire** next move against current occupancy before sending its first
+`CARRY`.
 
 | Ply | UCI | Expected physical action |
 | --- | --- | --- |
