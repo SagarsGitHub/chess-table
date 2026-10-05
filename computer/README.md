@@ -165,8 +165,9 @@ simulation, port discovery, physical smoke, and resume commands.
 ## Current limits
 
 - General route execution has software and compiled-Uno simulator coverage,
-  plus a reported 16-ply loaded physical run. The complete game, all parking
-  slots, and tight knight-route acceptance remain to be verified on the board.
+  plus a 155-ply loaded physical self-play run that stopped during its next
+  carry. A complete game, all parking slots, and direct-diagonal routing
+  remain to be verified on the board.
 - Game checkpoints and source/destination recovery rely on an operator's
   inspection. There is no camera or piece sensor to reconcile automatically.
 - A promoted pawn looks like a pawn even though it moves under the selected

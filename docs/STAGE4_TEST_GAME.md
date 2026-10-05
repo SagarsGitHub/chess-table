@@ -1,12 +1,15 @@
 # Stage 4 physical test game
 
 This runbook covers the smoke line and continuation toward a
-complete physical game against Stockfish. The saved 2026-10-05 physical run
-reached 16 committed plies and four occupied parking slots. A complete game,
-promotion, all 32 parking slots, and fault recovery still need physical
-acceptance evidence. This table has no piece sensors: the human enters UCI
-moves, successful `DONE CARRY` responses advance expected occupancy during
-ordinary play, and uncertain outcomes require physical reconciliation.
+complete physical game against Stockfish. The first saved 2026-10-05 physical
+run reached 16 committed plies and four occupied parking slots. A later
+self-play run reached 155 committed plies and 24 occupied slots, then stopped
+with the next carry uncertain. Reconcile that checkpoint before resuming it.
+A complete game, promotion, all 32 parking slots, and fault recovery still
+need physical acceptance evidence. This table has no piece sensors: the human
+enters UCI moves, successful `DONE CARRY` responses advance expected
+occupancy during ordinary play, and uncertain outcomes require physical
+reconciliation.
 
 ## Board and clearance gate
 
