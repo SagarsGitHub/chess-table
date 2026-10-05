@@ -8,39 +8,33 @@ victim and attacker legs of a capture.
 
 from __future__ import annotations
 
-from collections import Counter
-from dataclasses import dataclass, field, replace
-from pathlib import Path
+from dataclasses import replace
 from typing import Callable, Protocol
-import json
-import os
 
 import chess
 
+from .checkpoint import (
+    PROMOTION_RULE, STATE_VERSION, GameState, JsonGameStore, PendingMove, PendingReset,
+)
+from .game_errors import GameStateError
+from .physical import (
+    _apply_action, _board_pieces, _occupied_slots, _occupied_squares,
+    _physical_map, _piece_at, _replay_physical,
+)
 from .planner import (
     Action,
-    BoardSquare,
-    ManualReplacement,
     MovePlan,
     ParkingInventory,
-    ParkingSlot,
     PromotionPolicy,
     Transfer,
     plan_move,
 )
 from .routing import (
-    CarryRoute, NoRouteError, ReachableParkingSlotSelector, RouteError,
-    RouteGeometry, RouteTooLongError, location_point, plan_transfer_route,
+    CarryRoute, NoRouteError, ReachableParkingSlotSelector,
+    RouteGeometry, RouteTooLongError, plan_transfer_route,
 )
-from .wire import encode_carry, encode_map
-
-
-STATE_VERSION = 4
-PROMOTION_RULE = "pawn_stand_in"
-
-
-class GameStateError(ValueError):
-    """Saved game state is invalid or inconsistent."""
+from .reset_plan import plan_reset
+from .wire import encode_carry
 
 
 class ReconciliationRequired(GameStateError):
@@ -54,449 +48,6 @@ class MoveDeferred(GameStateError):
 class CarryLink(Protocol):
     def set_map(self, occupancy_hex: str): ...
     def carry(self, source_id: str, destination_id: str, point_chars: str): ...
-
-
-def _board_pieces(board: chess.Board) -> dict[str, str]:
-    return {chess.square_name(square): piece.symbol() for square, piece in board.piece_map().items()}
-
-
-def _replay_physical(initial_fen: str, moves: list[str]) -> tuple[chess.Board, dict[str, str]]:
-    """Replay legal moves while keeping a promoted pawn's physical identity."""
-    try:
-        board = chess.Board(initial_fen)
-        physical = _board_pieces(board)
-        for uci in moves:
-            move = board.parse_uci(uci)
-            source = chess.square_name(move.from_square)
-            destination = chess.square_name(move.to_square)
-            if board.is_capture(move):
-                victim_square = move.to_square
-                if board.is_en_passant(move):
-                    victim_square += -8 if board.turn == chess.WHITE else 8
-                victim = physical.pop(chess.square_name(victim_square), None)
-                if victim is None:
-                    raise GameStateError(f"physical capture victim missing for {uci}")
-            mover = physical.pop(source, None)
-            if mover is None:
-                raise GameStateError(f"physical mover missing for {uci}")
-            if board.is_castling(move):
-                rank = chess.square_rank(move.from_square)
-                rook_from = chess.square(7 if board.is_kingside_castling(move) else 0, rank)
-                rook_to = chess.square(5 if board.is_kingside_castling(move) else 3, rank)
-                rook = physical.pop(chess.square_name(rook_from), None)
-                if rook is None:
-                    raise GameStateError(f"physical castling rook missing for {uci}")
-                physical[chess.square_name(rook_to)] = rook
-            # On promotion, the pawn moves to the final rank unchanged. The
-            # logical board below records the selected Q/R/B/N role.
-            physical[destination] = mover
-            board.push(move)
-    except GameStateError:
-        raise
-    except (TypeError, ValueError) as exc:
-        raise GameStateError(f"invalid saved move history: {exc}") from exc
-    return board, physical
-
-
-def _location_to_json(location: BoardSquare | ParkingSlot) -> dict[str, object]:
-    if isinstance(location, BoardSquare):
-        return {"square": location.name}
-    return {"slot": location.slot_id}
-
-
-def _location_from_json(value: object) -> BoardSquare | ParkingSlot:
-    if not isinstance(value, dict) or len(value) != 1:
-        raise GameStateError("invalid saved location")
-    if "square" in value:
-        return BoardSquare(value["square"])
-    if "slot" in value:
-        return ParkingSlot(value["slot"])
-    raise GameStateError("invalid saved location")
-
-
-def _action_to_json(action: Action) -> dict[str, object]:
-    if isinstance(action, Transfer):
-        return {
-            "type": "transfer", "piece": action.piece,
-            "source": _location_to_json(action.source),
-            "destination": _location_to_json(action.destination),
-            "reason": action.reason,
-        }
-    return {
-        "type": "manual_replacement", "square": action.square.name,
-        "pawn": action.pawn, "replacement": action.replacement,
-    }
-
-
-def _action_from_json(value: object) -> Action:
-    if not isinstance(value, dict):
-        raise GameStateError("invalid saved action")
-    if value.get("type") == "transfer":
-        return Transfer(
-            value["piece"], _location_from_json(value["source"]),
-            _location_from_json(value["destination"]), value["reason"],
-        )
-    if value.get("type") == "manual_replacement":
-        return ManualReplacement(
-            BoardSquare(value["square"]), value["pawn"], value["replacement"]
-        )
-    raise GameStateError("unknown saved action type")
-
-
-def _piece_at(
-    squares: dict[str, str], slots: list[str | None], location: BoardSquare | ParkingSlot
-) -> str | None:
-    return squares.get(location.name) if isinstance(location, BoardSquare) else slots[location.slot_id]
-
-
-def _put_piece(
-    squares: dict[str, str], slots: list[str | None],
-    location: BoardSquare | ParkingSlot, piece: str | None,
-) -> None:
-    if isinstance(location, BoardSquare):
-        if piece is None:
-            squares.pop(location.name, None)
-        else:
-            squares[location.name] = piece
-    else:
-        slots[location.slot_id] = piece
-
-
-def _apply_action(
-    squares: dict[str, str], slots: list[str | None], action: Action
-) -> None:
-    if isinstance(action, Transfer):
-        if _piece_at(squares, slots, action.source) != action.piece:
-            raise GameStateError(f"source does not contain {action.piece}: {action.source}")
-        if _piece_at(squares, slots, action.destination) is not None:
-            raise GameStateError(f"destination is occupied: {action.destination}")
-        _put_piece(squares, slots, action.source, None)
-        _put_piece(squares, slots, action.destination, action.piece)
-    else:
-        if squares.get(action.square.name) != action.pawn:
-            raise GameStateError(f"promotion square does not contain {action.pawn}")
-        squares[action.square.name] = action.replacement
-
-
-def _occupied_squares(squares: dict[str, str]) -> set[BoardSquare]:
-    return {BoardSquare(name) for name in squares}
-
-
-def _occupied_slots(slots: list[str | None]) -> set[ParkingSlot]:
-    return {ParkingSlot(i) for i, piece in enumerate(slots) if piece is not None}
-
-
-def _parking_approaches(slot: ParkingSlot) -> tuple[str, ...]:
-    """Board centers through which a parked piece can enter or leave its slot."""
-    point = location_point(slot)
-    return tuple(
-        f"{chr(ord('a') + (point.x + dx - 1) // 2)}{(point.y + dy + 1) // 2}"
-        for dx in (-1, 1) for dy in (-1, 1)
-        if 1 <= point.x + dx <= 15 and 1 <= point.y + dy <= 15
-    )
-
-
-def _accessible_parking(slots: list[str | None], squares: dict[str, str]) -> set[int]:
-    return {
-        index for index, piece in enumerate(slots)
-        if piece is not None and any(
-            square not in squares for square in _parking_approaches(ParkingSlot(index))
-        )
-    }
-
-
-def _physical_map(squares: dict[str, str], slots: list[str | None]) -> str:
-    # encode_map inspects piece_map only; this temporary board need not be a
-    # legal chess position while a multi-transfer move is in progress.
-    board = chess.Board(None)
-    for name, symbol in squares.items():
-        board.set_piece_at(chess.parse_square(name), chess.Piece.from_symbol(symbol))
-    return encode_map(board, ParkingInventory(tuple(slots)))
-
-
-@dataclass
-class PendingMove:
-    uci: str
-    fen_after: str
-    parking_after: ParkingInventory
-    actions: tuple[Action, ...]
-    next_action: int = 0
-    phase: str = "ready"  # ready, in_flight, awaiting_confirmation
-    active_route: tuple[str, str, str] | None = None
-
-    def to_json(self) -> dict[str, object]:
-        return {
-            "uci": self.uci, "fen_after": self.fen_after,
-            "parking_after": list(self.parking_after.slots),
-            "actions": [_action_to_json(action) for action in self.actions],
-            "next_action": self.next_action, "phase": self.phase,
-            "active_route": list(self.active_route) if self.active_route else None,
-        }
-
-    @classmethod
-    def from_json(cls, value: object) -> PendingMove:
-        if not isinstance(value, dict):
-            raise GameStateError("invalid pending move")
-        route = value.get("active_route")
-        if route is not None and (not isinstance(route, list) or len(route) != 3 or
-                                  any(not isinstance(token, str) for token in route)):
-            raise GameStateError("invalid active route")
-        return cls(
-            uci=value["uci"], fen_after=value["fen_after"],
-            parking_after=ParkingInventory(tuple(value["parking_after"])),
-            actions=tuple(_action_from_json(item) for item in value["actions"]),
-            next_action=value["next_action"], phase=value["phase"],
-            active_route=tuple(route) if route is not None else None,
-        )
-
-
-@dataclass
-class PendingReset:
-    actions: tuple[Transfer, ...]
-    next_action: int = 0
-    phase: str = "ready"  # ready, in_flight, awaiting_confirmation
-    active_route: tuple[str, str, str] | None = None
-
-    def to_json(self) -> dict[str, object]:
-        return {
-            "actions": [_action_to_json(action) for action in self.actions],
-            "next_action": self.next_action,
-            "phase": self.phase,
-            "active_route": list(self.active_route) if self.active_route else None,
-        }
-
-    @classmethod
-    def from_json(cls, value: object) -> PendingReset:
-        if not isinstance(value, dict):
-            raise GameStateError("invalid pending reset")
-        route = value.get("active_route")
-        if route is not None and (not isinstance(route, list) or len(route) != 3 or
-                                  any(not isinstance(token, str) for token in route)):
-            raise GameStateError("invalid reset active route")
-        actions = tuple(_action_from_json(item) for item in value["actions"])
-        if not actions or any(not isinstance(action, Transfer) for action in actions):
-            raise GameStateError("pending reset requires transfer actions")
-        return cls(
-            actions=actions, next_action=value["next_action"],
-            phase=value["phase"],
-            active_route=tuple(route) if route is not None else None,
-        )
-
-
-@dataclass
-class GameState:
-    board_fen: str
-    committed_parking: ParkingInventory
-    physical_squares: dict[str, str]
-    physical_parking: list[str | None]
-    moves: list[str] = field(default_factory=list)
-    pending: PendingMove | None = None
-    reset: PendingReset | None = None
-    events: list[dict[str, object]] = field(default_factory=list)
-    initial_fen: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.initial_fen is None:
-            self.initial_fen = self.board_fen
-
-    @classmethod
-    def new(cls) -> GameState:
-        board = chess.Board()
-        return cls(board.fen(), ParkingInventory.empty(), _board_pieces(board), [None] * 32)
-
-    def board(self) -> chess.Board:
-        """Rebuild the legal move stack, including repetition history."""
-        board, _ = _replay_physical(self.initial_fen, self.moves)
-        if board.fen() != self.board_fen:
-            raise GameStateError("saved FEN differs from replayed move history")
-        return board
-
-    def expected_physical_squares(self) -> dict[str, str]:
-        board, physical = _replay_physical(self.initial_fen, self.moves)
-        if board.fen() != self.board_fen:
-            raise GameStateError("saved FEN differs from replayed move history")
-        return physical
-
-    def validate(self) -> None:
-        try:
-            board = self.board()
-            ParkingInventory(tuple(self.physical_parking))
-            for name, symbol in self.physical_squares.items():
-                BoardSquare(name)
-                chess.Piece.from_symbol(symbol)
-        except (ValueError, TypeError) as exc:
-            raise GameStateError(f"invalid saved physical position: {exc}") from exc
-        if not board.is_valid():
-            raise GameStateError("committed chess position is invalid")
-        if not isinstance(self.moves, list) or any(not isinstance(move, str) for move in self.moves):
-            raise GameStateError("invalid move history")
-        if self.reset is not None:
-            if self.pending is not None:
-                raise GameStateError("move and board reset cannot both be pending")
-            if self.initial_fen != chess.Board().fen():
-                raise GameStateError("board reset requires a standard-start game")
-            reset = self.reset
-            if (not reset.actions or any(not isinstance(action, Transfer)
-                                         for action in reset.actions)):
-                raise GameStateError("pending reset requires transfer actions")
-            if (type(reset.next_action) is not int or
-                    not 0 <= reset.next_action < len(reset.actions) or
-                    reset.phase not in {"ready", "in_flight", "awaiting_confirmation"}):
-                raise GameStateError("invalid reset action cursor")
-            if (reset.phase == "ready") != (reset.active_route is None):
-                raise GameStateError("inconsistent reset phase and route")
-            squares = self.expected_physical_squares()
-            slots = list(self.committed_parking.slots)
-            for action in reset.actions[:reset.next_action]:
-                _apply_action(squares, slots, action)
-            if squares != self.physical_squares or slots != self.physical_parking:
-                raise GameStateError("physical checkpoint differs from confirmed reset prefix")
-            for action in reset.actions[reset.next_action:]:
-                _apply_action(squares, slots, action)
-            if squares != _board_pieces(chess.Board()) or any(slots):
-                raise GameStateError("reset actions do not restore the standard position")
-            return
-        if self.pending is None:
-            if (self.physical_squares != self.expected_physical_squares() or
-                    tuple(self.physical_parking) != self.committed_parking.slots):
-                raise GameStateError("physical snapshot differs from committed game")
-            return
-        pending = self.pending
-        if (not isinstance(pending.next_action, int) or
-                not 0 <= pending.next_action <= len(pending.actions) or
-                pending.phase not in {"ready", "in_flight", "awaiting_confirmation"}):
-            raise GameStateError("invalid pending action cursor")
-        if pending.next_action == len(pending.actions):
-            raise GameStateError("completed move was not committed")
-        if (pending.phase == "ready") != (pending.active_route is None):
-            # Manual replacement has no wire route but still awaits confirmation.
-            if not (pending.phase == "awaiting_confirmation" and
-                    isinstance(pending.actions[pending.next_action], ManualReplacement) and
-                    pending.active_route is None):
-                raise GameStateError("inconsistent pending phase and route")
-        try:
-            move = board.parse_uci(pending.uci)
-            expected = board.copy()
-            expected.push(move)
-        except ValueError as exc:
-            raise GameStateError("pending UCI is illegal") from exc
-        if expected.fen() != pending.fen_after:
-            raise GameStateError("pending resulting FEN does not match legal move")
-        squares = self.expected_physical_squares()
-        slots = list(self.committed_parking.slots)
-        for action in pending.actions[:pending.next_action]:
-            _apply_action(squares, slots, action)
-        if squares != self.physical_squares or slots != self.physical_parking:
-            raise GameStateError("physical checkpoint differs from confirmed action prefix")
-
-    def to_json(self) -> dict[str, object]:
-        self.validate()
-        return {
-            "version": STATE_VERSION,
-            "promotion_rule": PROMOTION_RULE,
-            "initial_fen": self.initial_fen,
-            "board_fen": self.board_fen,
-            "committed_parking": list(self.committed_parking.slots),
-            "physical_squares": dict(sorted(self.physical_squares.items())),
-            "physical_parking": self.physical_parking,
-            "moves": self.moves,
-            "pending": self.pending.to_json() if self.pending else None,
-            "reset": self.reset.to_json() if self.reset else None,
-            "events": self.events,
-        }
-
-    @classmethod
-    def from_json(cls, value: object) -> GameState:
-        if (not isinstance(value, dict) or type(value.get("version")) is not int or
-                value["version"] not in {1, 2, 3, STATE_VERSION}):
-            raise GameStateError("unsupported game-state version")
-        try:
-            version = value["version"]
-            if version in {3, STATE_VERSION} and value.get("promotion_rule") != PROMOTION_RULE:
-                raise GameStateError("game-state promotion rule does not match pawn stand-in design")
-            history = list(value["moves"])
-            if version in {1, 2}:
-                # Older versions physically replaced promoted pawns. Their
-                # snapshots cannot be interpreted under the stand-in rule.
-                pending = value.get("pending")
-                if pending is not None and not isinstance(pending, dict):
-                    raise GameStateError("invalid pending move")
-                if any(isinstance(uci, str) and len(uci) == 5 for uci in history) or (
-                    pending is not None and isinstance(pending.get("uci"), str)
-                    and len(pending["uci"]) == 5
-                ):
-                    raise GameStateError(
-                        f"version {version} promotion checkpoint needs manual reconciliation"
-                    )
-            if version == 1:
-                # v1 saved no initial FEN. Its CLI only created standard-start
-                # games, so infer that start only when every saved move replays
-                # to the exact saved FEN. Do not guess for other positions.
-                replay = chess.Board()
-                try:
-                    for uci in history:
-                        replay.push(replay.parse_uci(uci))
-                except (TypeError, ValueError) as exc:
-                    raise GameStateError("version 1 move history cannot be replayed") from exc
-                if replay.fen() != value["board_fen"]:
-                    raise GameStateError(
-                        "version 1 initial position cannot be inferred from the standard start"
-                    )
-                initial_fen = chess.Board().fen()
-            else:
-                initial_fen = value["initial_fen"]
-            state = cls(
-                board_fen=value["board_fen"],
-                committed_parking=ParkingInventory(tuple(value["committed_parking"])),
-                physical_squares=dict(value["physical_squares"]),
-                physical_parking=list(value["physical_parking"]),
-                moves=history,
-                pending=PendingMove.from_json(value["pending"]) if value["pending"] is not None else None,
-                reset=PendingReset.from_json(value["reset"]) if version == STATE_VERSION and value.get("reset") is not None else None,
-                events=list(value.get("events", [])),
-                initial_fen=initial_fen,
-            )
-            state.validate()
-            if version in {1, 2} and state.pending is not None:
-                # Validate the whole saved plan before resuming any remaining
-                # physical action, not just its already-confirmed prefix.
-                if any(isinstance(action, ManualReplacement) for action in state.pending.actions):
-                    raise GameStateError("legacy pending promotion needs manual reconciliation")
-                squares = state.expected_physical_squares()
-                slots = list(state.committed_parking.slots)
-                for action in state.pending.actions:
-                    _apply_action(squares, slots, action)
-                after = state.board()
-                after.push_uci(state.pending.uci)
-                if (squares != _board_pieces(after) or
-                        tuple(slots) != state.pending.parking_after.slots):
-                    raise GameStateError("legacy pending actions do not match the legal move")
-            return state
-        except GameStateError:
-            raise
-        except (KeyError, TypeError, ValueError) as exc:
-            raise GameStateError(f"invalid game-state file: {exc}") from exc
-
-
-class JsonGameStore:
-    """Atomic checkpoint file; every accepted physical action is persisted."""
-
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-
-    def load(self) -> GameState:
-        with self.path.open("r", encoding="utf-8") as handle:
-            return GameState.from_json(json.load(handle))
-
-    def save(self, state: GameState) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(self.path.name + ".tmp")
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(state.to_json(), handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self.path)
 
 
 class GameRunner:
@@ -517,6 +68,7 @@ class GameRunner:
         self, action: Transfer, squares: dict[str, str], slots: list[str | None],
         geometry: RouteGeometry,
     ) -> CarryRoute:
+        """Route against the inventory at this transfer, with bounded fallback."""
         options = {
             "occupied_squares": _occupied_squares(squares),
             "occupied_parking_slots": _occupied_slots(slots),
@@ -591,257 +143,17 @@ class GameRunner:
         return plan
 
     def preflight_reset(self, geometry: RouteGeometry) -> tuple[Transfer, ...]:
-        """Route a full return to the standard setup before moving anything.
-
-        Return misplaced home-rank pieces directly when their homes are clear;
-        stage them only to break cycles or open a parking approach. Prioritize
-        bishops and knights, then other back-rank pieces, then pawns. If the
-        remaining parked pieces' homes form a cycle, stage one in the interior.
-        Occupied parking slots must retain a vacant adjacent edge square until
-        retrieved.
-        """
+        """Validate the checkpoint, then preflight the complete physical reset."""
         if self.state.pending is not None:
             raise ReconciliationRequired("finish or reconcile the pending move before resetting")
         if self.state.reset is not None:
             raise GameStateError("board reset is already prepared")
         if self.state.initial_fen != chess.Board().fen():
             raise GameStateError("board reset requires a standard-start game")
-        target = _board_pieces(chess.Board())
-        squares = dict(self.state.physical_squares)
-        slots = list(self.state.physical_parking)
-        if Counter([*squares.values(), *(piece for piece in slots if piece)]) != Counter(target.values()):
-            raise GameStateError("physical pieces do not match the 32 standard starting pieces")
-        if squares == target and not any(slots):
-            return ()
-
-        actions: list[Transfer] = []
-        staging = tuple(
-            f"{file}{rank}" for rank in "3456" for file in "abcdefgh"
+        return plan_reset(
+            self.state.physical_squares, self.state.physical_parking,
+            geometry, self._route_transfer,
         )
-
-        def piece_priority(piece: str) -> int:
-            if piece.upper() in "BN":
-                return 0
-            if piece.upper() in "KQR":
-                return 1
-            return 2
-
-        def vacant_homes(piece: str, source: BoardSquare | ParkingSlot) -> list[str]:
-            source_point = location_point(source)
-            return sorted(
-                (name for name, symbol in target.items()
-                 if symbol == piece and name not in squares),
-                key=lambda name: (
-                    (location_point(BoardSquare(name)).x - source_point.x) ** 2 +
-                    (location_point(BoardSquare(name)).y - source_point.y) ** 2,
-                    name,
-                ),
-            )
-
-        def try_transfer(source: BoardSquare | ParkingSlot, destination: BoardSquare) -> bool:
-            piece = _piece_at(squares, slots, source)
-            if piece is None or _piece_at(squares, slots, destination) is not None:
-                return False
-            transfer = Transfer(piece, source, destination, "reset_board")
-            try:
-                self._route_transfer(transfer, squares, slots, geometry)
-            except RouteError:
-                return False
-            _apply_action(squares, slots, transfer)
-            actions.append(transfer)
-            return True
-
-        def try_direct_home(name: str) -> bool:
-            if squares[name] == target.get(name):
-                return False
-            source = BoardSquare(name)
-            before = _accessible_parking(slots, squares)
-            for home in vacant_homes(squares[name], source):
-                destination = BoardSquare(home)
-                trial_squares = dict(squares)
-                trial_slots = list(slots)
-                _apply_action(trial_squares, trial_slots,
-                              Transfer(squares[name], source, destination, "reset_board"))
-                if not before.issubset(_accessible_parking(trial_slots, trial_squares)):
-                    continue
-                if try_transfer(source, destination):
-                    return True
-            return False
-
-        def stage(source_name: str, *, opening: int | None = None) -> bool:
-            source = BoardSquare(source_name)
-            before = _accessible_parking(slots, squares)
-            source_point = location_point(source)
-            destinations = sorted(
-                (name for name in staging if name not in squares and name != source_name),
-                key=lambda name: (
-                    sum(name in _parking_approaches(ParkingSlot(index))
-                        for index, piece in enumerate(slots) if piece is not None),
-                    (location_point(BoardSquare(name)).x - source_point.x) ** 2 +
-                    (location_point(BoardSquare(name)).y - source_point.y) ** 2,
-                    name,
-                ),
-            )
-            for name in destinations:
-                destination = BoardSquare(name)
-                trial_squares = dict(squares)
-                trial_slots = list(slots)
-                _apply_action(trial_squares, trial_slots,
-                              Transfer(squares[source_name], source, destination, "reset_board"))
-                after = _accessible_parking(trial_slots, trial_squares)
-                if not before.issubset(after) or (opening is not None and opening not in after):
-                    continue
-                if try_transfer(source, destination):
-                    return True
-            return False
-
-        # Prefer a one-carry return over staging. Retry direct homes after each
-        # transfer because vacating one square can expose another piece's home.
-        # A direct return must not close an existing exit for a parked piece.
-        while True:
-            wrong_homes = sorted(
-                (name for name, piece in squares.items()
-                 if name[1] in "1278" and piece != target.get(name)),
-                key=lambda name: (piece_priority(squares[name]), name),
-            )
-            if not wrong_homes:
-                break
-            moved = False
-            for name in wrong_homes:
-                if try_direct_home(name):
-                    moved = True
-                    break
-            if moved:
-                continue
-            # If a cycle needs a temporary square, move the easier blocker
-            # first so an awkward piece can use its home in one carry.
-            for name in sorted(wrong_homes,
-                               key=lambda square: (-piece_priority(squares[square]), square)):
-                if stage(name):
-                    moved = True
-                    break
-            if not moved:
-                raise NoRouteError("cannot clear misplaced home-rank pieces for board reset")
-
-        # A corner parking slot has only one board-side exit. Temporarily stage
-        # whichever edge piece blocks an occupied slot before retrieval.
-        while True:
-            accessible = _accessible_parking(slots, squares)
-            blocked = [index for index, piece in enumerate(slots)
-                       if piece is not None and index not in accessible]
-            if not blocked:
-                break
-            slot_id = blocked[0]
-            if not any(
-                stage(name, opening=slot_id)
-                for name in _parking_approaches(ParkingSlot(slot_id)) if name in squares
-            ):
-                raise NoRouteError(f"cannot open an approach to parking slot {slot_id}")
-
-        # Return off-home back-rank pieces from the board before retrieving
-        # parked pawns. All occupied parking slots are accessible now, and
-        # each direct return must preserve every one of those exits.
-        while True:
-            candidates = sorted(
-                (name for name, piece in squares.items()
-                 if piece_priority(piece) < 2 and piece != target.get(name)),
-                key=lambda name: (piece_priority(squares[name]), name),
-            )
-            if not any(try_direct_home(name) for name in candidates):
-                break
-
-        while any(slots):
-            accessible = _accessible_parking(slots, squares)
-            choices = sorted(
-                (index for index, piece in enumerate(slots) if piece is not None),
-                key=lambda index: (
-                    piece_priority(slots[index]),
-                    sum(name not in squares for name in _parking_approaches(ParkingSlot(index))),
-                    index,
-                ),
-            )
-            chosen = False
-            for index in choices:
-                if index not in accessible:
-                    continue
-                source = ParkingSlot(index)
-                destinations = vacant_homes(slots[index], source)
-                for name in destinations:
-                    destination = BoardSquare(name)
-                    trial_squares = dict(squares)
-                    trial_slots = list(slots)
-                    _apply_action(trial_squares, trial_slots,
-                                  Transfer(slots[index], source, destination, "reset_board"))
-                    if len(_accessible_parking(trial_slots, trial_squares)) != sum(
-                        piece is not None for piece in trial_slots
-                    ):
-                        continue
-                    if try_transfer(source, destination):
-                        chosen = True
-                        break
-                if chosen:
-                    break
-            if not chosen:
-                # Parked pieces can form an ordering cycle even when every
-                # slot has an open approach. For example, returning a queen
-                # to d8 can close a bishop's only exit, returning that bishop
-                # to f8 can close a rook's exit, and returning the rook to a8
-                # can close the queen's. Bring one piece onto an interior
-                # square, then retry the newly unblocked home transfers.
-                # Keep the same route and remaining-exit checks as a direct
-                # return; no speculative CARRY is sent during preflight.
-                for index in choices:
-                    if index not in accessible:
-                        continue
-                    source = ParkingSlot(index)
-                    source_point = location_point(source)
-                    destinations = sorted(
-                        (name for name in staging if name not in squares),
-                        key=lambda name: (
-                            sum(name in _parking_approaches(ParkingSlot(other))
-                                for other, piece in enumerate(slots)
-                                if other != index and piece is not None),
-                            (location_point(BoardSquare(name)).x - source_point.x) ** 2 +
-                            (location_point(BoardSquare(name)).y - source_point.y) ** 2,
-                            name,
-                        ),
-                    )
-                    for name in destinations:
-                        destination = BoardSquare(name)
-                        trial_squares = dict(squares)
-                        trial_slots = list(slots)
-                        _apply_action(trial_squares, trial_slots,
-                                      Transfer(slots[index], source, destination, "reset_board"))
-                        if len(_accessible_parking(trial_slots, trial_squares)) != sum(
-                            piece is not None for piece in trial_slots
-                        ):
-                            continue
-                        if try_transfer(source, destination):
-                            chosen = True
-                            break
-                    if chosen:
-                        break
-                if not chosen:
-                    raise NoRouteError("cannot retrieve remaining parked pieces without trapping a slot")
-
-        while squares != target:
-            chosen = False
-            for name in sorted(tuple(squares),
-                               key=lambda square: (piece_priority(squares[square]), square)):
-                if squares[name] == target.get(name):
-                    continue
-                source = BoardSquare(name)
-                for home in vacant_homes(squares[name], source):
-                    if try_transfer(source, BoardSquare(home)):
-                        chosen = True
-                        break
-                if chosen:
-                    break
-            if not chosen:
-                raise NoRouteError("cannot return staged pieces to the standard setup")
-        if any(slots):
-            raise GameStateError("reset plan left occupied parking")
-        return tuple(actions)
 
     def prepare_reset(self, geometry: RouteGeometry) -> tuple[Transfer, ...]:
         actions = self.preflight_reset(geometry)
@@ -859,6 +171,7 @@ class GameRunner:
         approve_route: Callable[[Transfer, CarryRoute, tuple[str, str, str]], bool] | None = None,
         *, confirmation_source: str = "operator",
     ) -> None:
+        """Checkpoint before and after each carry; leave uncertain work pending."""
         if confirmation_source not in {"operator", "controller_done", "simulation"}:
             raise ValueError("invalid confirmation source")
         pending = self.state.pending
@@ -920,6 +233,7 @@ class GameRunner:
         approve_route: Callable[[Transfer, CarryRoute, tuple[str, str, str]], bool] | None = None,
         *, confirmation_source: str = "operator",
     ) -> None:
+        """Execute a saved return plan with a checkpoint at each transfer."""
         if confirmation_source not in {"operator", "controller_done", "simulation"}:
             raise ValueError("invalid confirmation source")
         pending = self.state.reset

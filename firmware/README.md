@@ -3,9 +3,17 @@
 Arduino Uno R3 / PlatformIO firmware for two M415B drivers, TR6x12 actuators,
 1/8 microstepping, four normally-open limit switches, and an active-HIGH magnet
 relay. Travel is 150 mm/s with the magnet off; carrying is 50 mm/s with
-400 mm/s² acceleration. No motion
-starts at boot. The older one-letter motion and fixture commands were removed
-to fit general routes on the Uno; their implementation remains in Git history.
+400 mm/s² acceleration. No motion starts at boot. The older one-letter motion
+and fixture commands are available in Git history; the shipped firmware uses
+the framed host protocol below.
+
+`src/main.cpp` owns hardware startup, homing, and the serial command parser.
+`BoardController.cpp` owns geometry and the declared piece map;
+`BoardControllerRoute.cpp` validates full routes and converts coordinates;
+`BoardControllerMotion.cpp` advances motors and magnet through nonblocking
+stages and handles faults. `include/BoardCoordinates.h` defines the parking
+coordinate mapping shared with the host. This separation keeps route checks
+ahead of motion.
 
 ## Computer link
 
@@ -126,15 +134,8 @@ to FastAccelStepper. Configuration is in `include/config.h`.
 
 ## Build and verification
 
-```powershell
-pio run
-node tests/machine-sim.cjs
-node tests/machine-sim.cjs --restore
-node tests/machine-sim.cjs --small-table
-```
-
-Run the default test before `--restore`; it saves a simulated EEPROM image.
-Check the PlatformIO flash and static RAM totals against the Uno limits after
-each firmware change. Tests execute the real HEX in AVR8js with
-simulated GPIO, switches, motors, relay, and EEPROM. They do not drive the
-physical table or resolve the reported release reset.
+Run `pio run` and `node tests/machine-sim.cjs` from this directory. The build
+must stay within the Uno flash and RAM limits. The compiled-HEX simulator covers
+GPIO, motors, relay, switches, and EEPROM; see [tests/README.md](tests/README.md)
+for all modes. It does not drive the physical table or resolve the reported
+release reset.

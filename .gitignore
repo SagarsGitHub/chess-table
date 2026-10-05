@@ -221,3 +221,6 @@ cython_debug/
 **/node_modules/
 /computer/runs/
 *.session.lock
+
+# Legacy Sphinx output; keep its .rst sources and original docs/img assets.
+/legacy/chess_automated/docs/_build/

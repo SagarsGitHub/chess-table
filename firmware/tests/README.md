@@ -34,18 +34,7 @@ transition, magnet event, and commanded pulse position.
 The simulator confirms commanded positions and motion safety decisions. It
 cannot establish physical magnetic coupling, piece clearance, backlash, missed
 steps, supply integrity, or the reported magnet-release reset. Those require
-bench testing.
-
-## Exhaustive route and map header checks
-
-The earlier C++ route/map headers remain in source history and are still
-checked independently:
-
-```powershell
-g++ -std=c++11 -Wall -Wextra -Werror -I include tests/knight-route.cpp -o .pio/knight-route-test.exe
-.pio/knight-route-test.exe
-```
-
-This checks all 4096 square pairs, 32 parking locations, and occupancy
-transitions. The active firmware's general CARRY routes are exercised by the
-compiled-HEX simulator above.
+bench testing. The obsolete `KnightRoute` header test exercised a generator
+that is no longer reachable from the shipped serial commands, so it was
+removed. This compiled-HEX test still covers active CARRY validation,
+representative parking coordinates, and occupancy transitions.

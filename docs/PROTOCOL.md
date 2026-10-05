@@ -8,7 +8,7 @@ The computer sends `@<id> <VERB> [arguments]\n`, where `<id>` is a positive deci
 
 | Request | Terminal success | Meaning |
 | --- | --- | --- |
-| `HELLO` | `DONE HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,SAVE,GEOM` | Negotiate version and the implemented commands. |
+| `HELLO` | `DONE HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,SAVE,GEOM` | Negotiate version and the implemented commands; `CARRY_DIAG` permits grid-to-grid diagonal legs. |
 | `STATUS` | `DONE STATUS REF=<0\|1> BUSY=<0\|1> MAP=<0\|1> SAVED=<0\|1>` | Read reference, busy, occupancy-map and saved-geometry state. |
 | `HOME` | `DONE HOME` | Full X/Y calibration has actually completed. |
 | `REF` | `DONE REF` | Saved-geometry MIN reference has actually completed. |
@@ -24,7 +24,7 @@ Other errors include `BUSY`, `SYNTAX`, `UNKNOWN`, `DUPLICATE`, `REFERENCE`, `MAP
 
 `MAP` takes exactly 24 uppercase hexadecimal characters (12 bytes). Within each byte, the least significant bit is the lowest position ID. IDs `0..63` are `a1..h8` in rank-major order; IDs `64..95` are perimeter slots `P00..P31`. The initial chess position with all parking slots empty is `FFFF00000000FFFF00000000`. The host sends this command only after the physical board and host inventory have been reconciled. The bitmap records occupancy, not piece identity.
 
-`CARRY` names source and destination as decimal position IDs `0..95`. `<points>` is 4 to 24 characters: two base-17 characters per waypoint, inclusive of pickup and delivery, for **2..12 waypoints**. Digits `0..9` and letters `A..G` encode a half-square coordinate `0..16`; each pair is `(x,y)`. For example, `79` is the center of `d5`, and `00` is parking slot `P00`. Square centers are odd/odd; grid intersections and parking positions are even/even. The host plans the route from a current occupancy snapshot, first checking measured piece clearance and optionally retrying a bounded route that avoids occupied centers when that clearance blocks play. The firmware checks route topology, map occupancy, and travel bounds before energizing the magnet. It rejects a route that cannot fit in 12 waypoints; neither side truncates one.
+`CARRY` names source and destination as decimal position IDs `0..95`. `<points>` is 4 to 24 characters: two base-17 characters per waypoint, inclusive of pickup and delivery, for **2..12 waypoints**. Digits `0..9` and letters `A..G` encode a half-square coordinate `0..16`; each pair is `(x,y)`. For example, `79` is the center of `d5`, and `00` is parking slot `P00`. Square centers are odd/odd; grid intersections and parking positions are even/even. Center-to-grid links are one-step diagonals; grid-to-grid legs may be orthogonal or 45-degree diagonal. The host plans the route from a current occupancy snapshot, first checking measured piece clearance and optionally retrying a bounded route that avoids occupied centers when that clearance blocks play. The firmware checks route topology, map occupancy, and travel bounds before energizing the magnet. It rejects a route that cannot fit in 12 waypoints; neither side truncates one.
 
 After `HOME` or `REF`, the host reads `GEOM` and uses those numbers for checked route planning. The four-decimal reply has finite precision; the clearance margin must allow for that rounding, motor path error, and physical centering error. `GEOM` returns `ERR REFERENCE` before a live reference exists. `HELLO` and `GEOM` return `ERR BUSY` during motion or calibration so their longer replies cannot delay limit sampling.
 

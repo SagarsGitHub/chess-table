@@ -14,11 +14,22 @@ The computer owns **what should happen** in a game. The Arduino owns **how to ex
 | Player and engine | Accept human UCI input, run Stockfish, and provide optional supervision prompts and game status. | No engine or user account logic. |
 | Physical truth | Require manual UCI entry for human moves. Track expected board and slot occupancy from completed operations. Offer optional `--supervised` confirmation during testing; require inspection and reconciliation after uncertain outcomes. | Report switch/motion/magnet state. A completed step count is not a piece-presence measurement. |
 
+## Host module map
+
+| Module | Responsibility |
+| --- | --- |
+| `planner.py`, `routing.py` | Legal move transfers, reachable parking choices, and measured carry routes. |
+| `physical.py`, `reset_plan.py` | Expected physical inventory, promoted-pawn replay, and pure full-reset preflight. Neither sends motor commands. |
+| `checkpoint.py`, `game.py`, `game_errors.py` | Versioned persistence, game orchestration, reconciliation, and shared state errors. |
+| `wire.py`, `serial_link.py` | Frame encoding and ID-matched controller communication. |
+| `host_config.py`, `link_adapters.py` | Shared settings, simulation, and serial transcript adapters. |
+| `play.py`, `gui.py`, `gui_http.py`, `gui_static/` | CLI, browser session, HTTP handler, and interface over the same game runner and checkpoints. `build_gui.py` combines browser source modules into the served `app.js`. |
+
 ## Operation order
 
 1. The computer validates a proposed UCI move against its current board.
 2. It creates a logical plan. A capture first moves the victim to an available parking slot; en passant uses the pawn's actual square. Castling requires two carries. On promotion, the pawn moves to the last rank and remains the physical piece while the legal game records the chosen queen, rook, bishop, or knight.
-3. A physical route planner checks the current `GEOM` calibration and occupied locations, then selects a route within the Uno's 12-waypoint `CARRY` limit. It first seeks a route with measured circular piece clearance. If enabled and that fails, a tight-route fallback may pass closer to occupied pieces while avoiding occupied centers. It still obeys calibrated travel bounds and the waypoint limit. `--strict-clearance` disables the fallback. Loaded hardware clearance remains to be validated.
+3. A physical route planner checks the current `GEOM` calibration and occupied locations, then selects a route within the Uno's 12-waypoint `CARRY` limit. It first seeks a route with measured circular piece clearance. If enabled and that fails, a tight-route fallback may pass closer to occupied pieces while avoiding occupied centers. It still obeys calibrated travel bounds and the waypoint limit. `--strict-clearance` disables the fallback. New loaded routes still need physical inspection for neighboring-piece contact.
 4. The computer sends one bounded command, waits for an ID-matched completion, and records the outcome. A matched `DONE CARRY` advances the expected physical occupancy automatically in normal mode. Optional `--supervised` mode pauses for operator confirmation. A timeout, reset, stop, or fault marks the physical state **uncertain**; software must not advance the authoritative game position automatically.
 5. When all operations complete, the computer commits the chess move and updated parking inventory together. A discovered physical discrepancy pauses play for reconciliation before another move.
 

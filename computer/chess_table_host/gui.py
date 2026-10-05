@@ -11,8 +11,6 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-import json
 from pathlib import Path
 from queue import Empty, Queue
 import sys
@@ -20,11 +18,11 @@ import threading
 import time
 import traceback
 from typing import Any
-from urllib.parse import urlsplit
 
 import chess
 import chess.engine
 
+from .gui_http import ApiError, GuiHTTPServer
 from .game import GameRunner, GameState, GameStateError, JsonGameStore, MoveDeferred, ReconciliationRequired
 from .planner import PlanError
 from .routing import RouteError, RouteGeometry
@@ -37,14 +35,7 @@ from .play import (
 from .session_lock import SessionLock
 
 
-STATIC_DIR = Path(__file__).with_name("gui_static")
 MODES = frozenset({"human_engine", "self_play", "manual_both"})
-
-
-class ApiError(ValueError):
-    def __init__(self, message: str, status: HTTPStatus = HTTPStatus.CONFLICT):
-        super().__init__(message)
-        self.status = status
 
 
 class SynchronizedGameStore(JsonGameStore):
@@ -88,6 +79,7 @@ class SynchronizedGameStore(JsonGameStore):
 
 
 def _san_history(state: GameState) -> list[str]:
+    """Replay committed UCI moves to derive notation for the browser."""
     board = chess.Board(state.initial_fen)
     history = []
     for uci in state.moves:
@@ -98,6 +90,7 @@ def _san_history(state: GameState) -> list[str]:
 
 
 def _active_action(state: GameState) -> dict[str, Any] | None:
+    """Describe the next saved transfer without reading the mutable runner."""
     active = state.reset or state.pending
     if active is None:
         return None
@@ -213,6 +206,7 @@ class GameController:
         raise AssertionError("checkpoint retry loop did not return")
 
     def _connection(self) -> tuple[Any, RouteGeometry]:
+        """Open the controller lazily and retain its measured route geometry."""
         if self.link is None:
             if self.simulate:
                 self.link = SimulatedLink()
@@ -250,6 +244,7 @@ class GameController:
         }
 
     def state(self) -> dict[str, Any]:
+        """Build the browser view from an atomic checkpoint and worker metadata."""
         # JsonGameStore.load reads the atomically replaced file. Never inspect
         # the runner's mutable state from an HTTP thread during a CARRY.
         state, cached = self.store.read_snapshot()
@@ -324,6 +319,7 @@ class GameController:
 
     def _start_worker(self, task, *, mode: str | None = None, human: str = "white",
                       reset_after: bool = False) -> None:
+        """Give a single background worker ownership of the game and link."""
         with self._guard:
             if self._worker is not None:
                 raise ApiError("a game or board reset is already running")
@@ -376,6 +372,7 @@ class GameController:
             self._status = f"Planning {uci}..."
 
     def stop(self) -> None:
+        """Request a safe pause, issuing serial STOP when motion may be active."""
         with self._guard:
             if self._worker is None:
                 return
@@ -415,6 +412,7 @@ class GameController:
                 self._status = self._error
 
     def reconcile(self, outcome: str, confirmed: bool) -> None:
+        """Record the inspected piece location after an uncertain transfer."""
         if not isinstance(outcome, str) or outcome not in {"source", "destination", "abort"}:
             raise ApiError("outcome must be source, destination, or abort", HTTPStatus.BAD_REQUEST)
         if confirmed is not True:
@@ -482,6 +480,7 @@ class GameController:
             self.reset_board()
 
     def _work(self, task) -> None:
+        """Contain worker errors and hand off a completed game to board reset."""
         completed = False
         try:
             task()
@@ -548,6 +547,7 @@ class GameController:
         return True
 
     def _game_loop(self) -> None:
+        """Choose each legal move and commit its checkpointed physical actions."""
         link, geometry = self._connection()
         self._set_activity("initializing", "Preparing the game...")
         engine = None
@@ -613,6 +613,7 @@ class GameController:
                 engine.quit()
 
     def _reset_loop(self) -> None:
+        """Archive the prior game, then execute or resume the saved reset plan."""
         link, geometry = self._connection()
         self._set_activity("moving", "Planning the board reset...")
         if self.runner.state.reset is None:
@@ -629,118 +630,6 @@ class GameController:
             confirmation_source="simulation" if self.simulate else "controller_done",
         )
         self._set_activity("idle", "Board reset complete; all 32 pieces are home.")
-
-
-class GuiHTTPServer(ThreadingHTTPServer):
-    daemon_threads = True
-    allow_reuse_address = True
-
-    def __init__(self, address: tuple[str, int], controller: GameController):
-        self.controller = controller
-        super().__init__(address, GuiHandler)
-
-
-class GuiHandler(BaseHTTPRequestHandler):
-    server: GuiHTTPServer
-
-    def _local_host(self) -> bool:
-        return self.headers.get("Host") in {
-            f"localhost:{self.server.server_port}",
-            f"127.0.0.1:{self.server.server_port}",
-        }
-
-    def _send_json(self, value: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
-        encoded = json.dumps(value, separators=(",", ":")).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
-
-    def _static(self, name: str, content_type: str) -> None:
-        path = STATIC_DIR / name
-        if not path.is_file():
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        data = path.read_bytes()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_GET(self) -> None:
-        if not self._local_host():
-            self.send_error(HTTPStatus.FORBIDDEN)
-            return
-        path = urlsplit(self.path).path
-        if path == "/api/state":
-            try:
-                self._send_json(self.server.controller.state())
-            except (OSError, GameStateError) as exc:
-                self._send_json({"error": f"checkpoint temporarily unavailable: {exc}"},
-                                HTTPStatus.SERVICE_UNAVAILABLE)
-        elif path == "/api/config":
-            self._send_json(self.server.controller.config())
-        elif path in {"/", "/index.html"}:
-            self._static("index.html", "text/html; charset=utf-8")
-        elif path == "/app.js":
-            self._static("app.js", "text/javascript; charset=utf-8")
-        elif path == "/style.css":
-            self._static("style.css", "text/css; charset=utf-8")
-        else:
-            self.send_error(HTTPStatus.NOT_FOUND)
-
-    def do_POST(self) -> None:
-        if not self._local_host():
-            self._send_json({"error": "local Host required"}, HTTPStatus.FORBIDDEN)
-            return
-        path = urlsplit(self.path).path
-        if path not in {"/api/start", "/api/move", "/api/stop", "/api/reconcile", "/api/reset-board", "/api/end-game-reset"}:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
-        # JSON and same-origin requests prevent an unrelated website from
-        # making blind form posts to this loopback-only motion controller.
-        origin = self.headers.get("Origin")
-        if origin and origin != f"http://{self.headers.get('Host')}":
-            self._send_json({"error": "cross-origin control is forbidden"}, HTTPStatus.FORBIDDEN)
-            return
-        if self.headers.get_content_type() != "application/json":
-            self._send_json({"error": "send application/json"}, HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
-            return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if not 0 <= length <= 8192:
-                raise ApiError("request body is too large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-            body = json.loads(self.rfile.read(length) or b"{}")
-            if not isinstance(body, dict):
-                raise ApiError("JSON body must be an object", HTTPStatus.BAD_REQUEST)
-            controller = self.server.controller
-            if path == "/api/start":
-                controller.start(body.get("mode"), body.get("human", "white"))
-            elif path == "/api/move":
-                controller.submit_move(body.get("uci"))
-            elif path == "/api/stop":
-                controller.stop()
-            elif path == "/api/reconcile":
-                controller.reconcile(body.get("outcome"), body.get("confirmed"))
-            elif path == "/api/reset-board":
-                controller.reset_board()
-            elif path == "/api/end-game-reset":
-                controller.end_game_and_reset()
-            self._send_json(controller.state(), HTTPStatus.ACCEPTED)
-        except json.JSONDecodeError:
-            self._send_json({"error": "invalid JSON"}, HTTPStatus.BAD_REQUEST)
-        except ApiError as exc:
-            self._send_json({"error": str(exc)}, exc.status)
-        except OSError as exc:
-            self._send_json({"error": f"checkpoint temporarily unavailable: {exc}"},
-                            HTTPStatus.SERVICE_UNAVAILABLE)
-        except (GameStateError, RouteError, PlanError, LinkError) as exc:
-            self._send_json({"error": str(exc)}, HTTPStatus.CONFLICT)
 
 
 def main(argv: list[str] | None = None) -> int:

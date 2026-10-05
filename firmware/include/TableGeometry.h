@@ -36,11 +36,3 @@ inline BoardPoint squareCenter(const TableSize &size, uint8_t file, uint8_t rank
     return {size.boardOriginXmm + (file + 0.5f) * Config::BOARD_SQUARE_MM,
             size.boardOriginYmm + (rank + 0.5f) * Config::BOARD_SQUARE_MM};
 }
-
-inline bool parseSquare(const char *name, uint8_t &file, uint8_t &rank) {
-    char letter = name[0];
-    if (letter >= 'A' && letter <= 'H') letter += 'a' - 'A';
-    if (letter < 'a' || letter > 'h' || name[1] < '1' || name[1] > '8') return false;
-    file = letter - 'a'; rank = name[1] - '1';
-    return true;
-}

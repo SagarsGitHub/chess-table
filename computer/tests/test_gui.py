@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from http.server import HTTPServer
 import json
 from pathlib import Path
+import runpy
 import tempfile
 import threading
 import time
@@ -57,6 +58,13 @@ def game_controller(*, simulate: bool = True):
 
 
 class GuiTests(unittest.TestCase):
+    def test_browser_bundle_matches_editable_sources(self):
+        """A source edit must regenerate the script served by live GUI sessions."""
+        computer = Path(__file__).resolve().parents[1]
+        build = runpy.run_path(str(computer / "build_gui.py"))["build"]
+        bundled = computer / "chess_table_host" / "gui_static" / "app.js"
+        self.assertEqual(bundled.read_text(encoding="utf-8"), build())
+
     def test_human_color_gates_engine_turns(self):
         class Engine:
             def play(self, _board, _limit, *, root_moves):

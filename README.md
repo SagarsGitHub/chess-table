@@ -1,28 +1,33 @@
 # Chess Table
 
-This private repository brings together a Python chess controller and Arduino Uno motion firmware for an automated physical chessboard with perimeter parking for captured pieces. It starts from [SagarsGitHub/chess_automated](https://github.com/SagarsGitHub/chess_automated) and the latest firmware snapshot in the local chess-table workspace. The reference project's Git history is retained.
+Python host and Arduino Uno firmware for an automated chessboard with 32 perimeter parking slots for captured pieces. The host owns chess rules, Stockfish, routes, and checkpoints; the Uno executes bounded motor and magnet commands. The board has no piece sensors. Human moves are entered in the GUI or CLI, and an interrupted carry requires physical inspection before play resumes.
 
-## Current state
+## Status
 
-The repository has a game runner, **but a complete physical game has not yet been accepted**. The computer side checks legal moves, assigns captured pieces to 32 perimeter slots, plans carry routes, checkpoints each completed action, and can play against Stockfish or run Stockfish against itself. Promoted pawns remain physical pawn stand-ins. The Uno firmware accepts bounded square-to-square and square-to-parking carries with map and route checks. Physical self-play reached 155 committed plies and 24 parked pieces before a stopped carry; full-game and special-move acceptance remain open. The table will never use physical piece sensing: human moves use UCI entry, and normal carries advance automatically after controller completion. A reported controller reset when the electromagnet releases remains under investigation.
+A physical GUI game reached a 126-ply draw with 20 parked pieces. Its board reset returned the saved state to 32 starting pieces and empty parking after a motion fault, reboot, and reconciliation. The user reports that the subsequent slower carry profiles work on the board. A repeatable fault-free loaded game, special-move coverage, and the reported magnet-release reset remain open acceptance work. See the [roadmap and evidence](docs/ROADMAP.md).
 
-The reference Python project contains game clients and uses `python-chess`, but its hardware implementation is incomplete and its 9600-baud serial command does not match the new Uno's 115200-baud framed protocol. The original software is kept in `legacy/` for traceability; new integration work belongs in `computer/` and `firmware/`.
+## Start in WSL
+
+Use the Coding checkout in Ubuntu WSL 2:
+
+```bash
+cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+For the browser game, follow the [GUI runbook](docs/GUI_GAME.md). For CLI smoke tests, Stockfish self-play, USB attachment, and recovery, use the [physical test runbook](docs/STAGE4_TEST_GAME.md). A new game needs a fresh checkpoint filename; `--resume` uses an existing one. The host performs `HOME` or `REF`, reads live `GEOM`, and sends `MAP`; it does not need a separate Serial Monitor setup step.
 
 ## Repository map
 
 | Path | Purpose |
 | --- | --- |
-| `computer/` | Chess state and parking plans, measured-geometry routing, wire encoding, and serial transport. |
-| `firmware/` | PlatformIO Uno firmware and compiled-device simulator tests. |
-| `docs/ARCHITECTURE.md` | Responsibility and state boundaries. |
-| `docs/ROADMAP.md` | Milestones, acceptance criteria, and hardware gates. |
-| `docs/PROTOCOL.md` | Version 1 serial frames, occupancy bitmap, and carry command. |
-| `docs/ROUTING.md` | Route topology, measured clearance inputs, and test scope. |
-| `docs/PROVENANCE.md` | Source revisions, license, and known gaps. |
-| `legacy/chess_automated/` | Unmodified reference Python application and its MIT license, moved intact from the source repository. |
+| [`computer/`](computer/README.md) | Game state, routing, Stockfish, GUI, serial transport, and host tests. |
+| [`firmware/`](firmware/README.md) | PlatformIO Uno code, pinout, calibration, and motor simulation. |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Host and Uno responsibilities and recovery boundary. |
+| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Framed serial commands and occupancy encoding. |
+| [`docs/ROUTING.md`](docs/ROUTING.md) | Route geometry and clearance behavior. |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones, physical evidence, and remaining acceptance work. |
+| [`legacy/chess_automated/`](legacy/chess_automated/) | Original reference project; see [provenance](docs/PROVENANCE.md). |
 
-See [architecture](docs/ARCHITECTURE.md) and [roadmap](docs/ROADMAP.md) before extending either side. The [firmware README](firmware/README.md) contains its command set, pinout, and calibration procedure. Software simulations do not confirm that the physical magnet picked up or delivered a piece.
-
-## Development starting points
-
-Run the computer program from the Coding checkout in Ubuntu WSL 2 using the [stage 4 runbook](docs/STAGE4_TEST_GAME.md). Its simulation and unit tests do not move hardware. The firmware is a PlatformIO project targeting Uno; from `firmware/`, run `pio run`, then follow the [simulator notes](firmware/tests/README.md). Stage 1 electrical diagnosis is deferred at the user's request. The physical acceptance gates remain in the roadmap.
+The repository retains the history of [SagarsGitHub/chess_automated](https://github.com/SagarsGitHub/chess_automated) and the selected workspace firmware snapshot. The original client's serial protocol differs from the integrated host and Uno protocol; new work belongs in `computer/` and `firmware/`.

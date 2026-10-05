@@ -82,12 +82,11 @@ configured tight-route fallback may route closer to occupied pieces than the
 travel limits, and the 12-waypoint bound. Watch neighboring pieces. Pass
 `--strict-clearance` to disable this fallback for a session.
 
-The updated Uno firmware carries at 50 mm/s and 400 mm/s², and slows a loaded
-horizontal grid segment beside occupied squares to 30 mm/s and 250 mm/s². It
-logs `tight piece mm/s=30.0` when that profile is selected. Flash the updated
-firmware before evaluating these speeds on the table; refreshing the GUI alone
-does not change motor timing. Stop the GUI server before flashing so it releases
-the serial port, then resume the same checkpoint.
+The Uno carries at 50 mm/s and 400 mm/s²; magnet-on horizontal grid segments
+beside occupied squares slow to 30 mm/s and 250 mm/s². The user reports that
+these profiles work on the board. Firmware changes still require flashing the
+Uno: stop the GUI first to release the serial port, then resume the same
+checkpoint. Refreshing the browser only updates the interface.
 
 After stopping and closing the GUI server, resume the same physical checkpoint:
 
@@ -95,35 +94,19 @@ After stopping and closing the GUI server, resume the same physical checkpoint:
 .venv/bin/python -m chess_table_host.gui --resume --state "$physical_state" --port "$serial_port" --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
 ```
 
-The physical session observed on 2026-10-05 at `localhost:8765` uses
-`runs/gui-physical-20261005-152550.json` on `/dev/ttyACM0`. Its 126-ply game
-ended in a draw, with 20 pieces parked. The old planner rejected the first
-reset request in full-plan preflight, before sending a reset `CARRY`. The
-revised planner staged a parked piece to break the exit cycle. The user
-reports that the physical reset worked; the saved checkpoint now records
-`board_reset_completed` with `previous_plies: 126`, a fresh standard position,
-32 pieces on the board, and empty parking.
-
-The reset serial transcript records 32 `CARRY` requests and 31 `DONE CARRY`
-responses. One `@35 ERR MOTION` occurred after its last waypoint, followed by
-`!BOOT`, reconnection, reconciliation, and eventual reset completion. This is
-evidence of a completed physical reset with recovery, not a fault-free loaded
-run. The displayed state still needs comparison with the actual table because
-the checkpoint cannot sense pieces.
-
-To reopen this saved session after the current GUI server closes, use
-`--resume` from WSL:
+The 2026-10-05 physical GUI game and reset are recorded in the
+[roadmap](ROADMAP.md#physical-progress-recorded-2026-10-05). Its checkpoint is
+back at the standard position after a 126-ply draw and a reset that required
+fault recovery. To reopen it after checking the actual pieces and empty
+parking against the displayed state:
 
 ```bash
 cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
 .venv/bin/python -m chess_table_host.gui --resume --state runs/gui-physical-20261005-152550.json --port /dev/ttyACM0 --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
 ```
 
-Use `--resume` for this existing checkpoint; `--new` requires a different
-filename. The completed 126-ply game is preserved in the pre-reset archive.
-Before a new physical game, compare the standard-position display and empty
-parking map with the actual pieces and slots. The reset planner preflights its
-full route before sending the first reset `CARRY`.
+Use `--resume` for this checkpoint; `--new` requires a different filename.
+The played game is preserved in its pre-reset archive.
 
 ## Pause, recover, and reset
 
@@ -158,11 +141,9 @@ If a reset transfer is interrupted, reconcile it in the same way, then
 continue the saved plan. An uncertain chess move must be physically inspected
 and reconciled before a reset can begin.
 
-## Acceptance record to collect
+## Acceptance record
 
-The 126-ply physical game and recovered reset establish a completed
-game-and-reset path. Continue testing resume, captures, castling, en passant,
-promotion stand-in, midgame **End game & reset board**, and fault recovery.
-Save each checkpoint, physical serial transcript, and notes on piece slip,
-neighboring movement, stops, and reconciliation. A fault-free loaded run and
-the deferred electrical diagnosis remain open.
+Keep the checkpoint, serial transcript, and observations about piece slip,
+neighboring movement, stops, and reconciliation. The [roadmap](ROADMAP.md)
+tracks the completed game and reset, remaining special-move and midgame
+recovery trials, and the deferred electrical diagnosis.

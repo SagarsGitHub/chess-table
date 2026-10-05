@@ -12,11 +12,6 @@ public:
         if (present) bits_[p / 8] |= 1U << (p % 8);
         else bits_[p / 8] &= ~(1U << (p % 8));
     }
-    void reset(bool startingPosition) {
-        for (uint8_t i = 0; i < 12; ++i)
-            bits_[i] = startingPosition && (i < 2 || i == 6 || i == 7) ? 0xFF : 0;
-        known_ = true;
-    }
     void load(const uint8_t bytes[12]) {
         for (uint8_t i = 0; i < 12; ++i) bits_[i] = bytes[i];
         known_ = true;

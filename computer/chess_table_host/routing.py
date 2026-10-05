@@ -171,7 +171,7 @@ class CarryRoute:
 
 
 def parking_point(slot: ParkingSlot) -> HalfSquarePoint:
-    """Match ``firmware/include/KnightRoute.h::parkingPoint`` exactly."""
+    """Match ``firmware/include/BoardCoordinates.h::parkingPoint`` exactly."""
 
     slot_id = slot.slot_id
     if slot_id < 9:
