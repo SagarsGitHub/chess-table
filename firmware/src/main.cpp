@@ -19,11 +19,14 @@ AxisCalibration *const calibrations[] = {&xCalibration, &yCalibration};
 Electromagnet electromagnet(Config::ELECTROMAGNET_RELAY_PIN);
 BoardController board(xAxis, yAxis, xCalibration, yCalibration, electromagnet);
 
+// At most one long command owns a request ID while loop() advances it.
 enum class Pending : uint8_t { None, Home, Ref, Carry };
 Pending pending = Pending::None;
 uint16_t pendingId = 0, lastRequestId = 0;
 bool hasRequestId = false;
 int8_t homingAxis = -1;
+// Keep the fixed serial buffer small enough for an Uno; drain an overlong
+// frame before reporting LENGTH so its tail cannot become a new command.
 char frame[96];
 uint8_t frameLength = 0;
 bool framedInput = false, frameOverflow = false;
@@ -36,8 +39,21 @@ void error(uint16_t id, const __FlashStringHelper *code) {
 void done(uint16_t id, const __FlashStringHelper *payload) {
     prefix(id); Serial.print(F("DONE ")); Serial.println(payload);
 }
+void clearPending() {
+    pending = Pending::None;
+    pendingId = 0;
+}
 bool busy() {
     return homingAxis >= 0 || board.isActive() || xAxis.isRunning() || yAxis.isRunning();
+}
+
+void stopMotion() {
+    board.cancel();
+    xCalibration.cancel();
+    yCalibration.cancel();
+    homingAxis = -1;
+    if (pendingId) error(pendingId, F("CANCELED"));
+    clearPending();
 }
 
 bool startHoming(bool saved) {
@@ -59,24 +75,31 @@ void updateHoming() {
     calibrations[i]->update();
     if (calibrations[i]->isActive()) return;
     if (!calibrations[i]->isCalibrated()) {
-        board.invalidate(); homingAxis = -1;
+        board.invalidate();
+        homingAxis = -1;
         error(pendingId, i == 0 ? F("CAL_X") : F("CAL_Y"));
-        pending = Pending::None; pendingId = 0;
+        clearPending();
         return;
     }
+    // X must finish before Y starts: the same framed request spans both axes.
     if (i == 0) {
-        if (yCalibration.start(pending == Pending::Ref ? board.savedSpan(1) : 0)) homingAxis = 1;
-        else {
-            board.invalidate(); homingAxis = -1;
-            error(pendingId, F("CAL_Y")); pending = Pending::None; pendingId = 0;
+        if (yCalibration.start(pending == Pending::Ref ? board.savedSpan(1) : 0)) {
+            homingAxis = 1;
+        } else {
+            board.invalidate();
+            homingAxis = -1;
+            error(pendingId, F("CAL_Y"));
+            clearPending();
         }
         return;
     }
     homingAxis = -1;
-    if (board.generate(pending == Pending::Ref))
+    if (board.generate(pending == Pending::Ref)) {
         done(pendingId, pending == Pending::Ref ? F("REF") : F("HOME"));
-    else error(pendingId, F("GEOMETRY"));
-    pending = Pending::None; pendingId = 0;
+    } else {
+        error(pendingId, F("GEOMETRY"));
+    }
+    clearPending();
 }
 
 int8_t hexNibble(char c) {
@@ -111,6 +134,8 @@ void processFrame() {
     } while (*p >= '0' && *p <= '9');
     if (!value) { Serial.println(F("!ERR BAD_ID")); return; }
     const uint16_t id = static_cast<uint16_t>(value);
+    // Retransmission of an active request is ACKed without restarting motion.
+    // All other IDs must increase during this boot, including rejected requests.
     if (pendingId == id) { ack(id); return; }
     ack(id);
     // Host IDs increase without wrapping during one boot. STOP may use 65535.
@@ -126,6 +151,9 @@ void processFrame() {
     char *args = p;
     if (*p) { *p++ = '\0'; args = p; }
 
+    // MAP carries 96 occupancy bits as 12 hex bytes. CARRY contains two
+    // decimal location IDs followed by half-square waypoint pairs. The
+    // remaining verbs require no arguments.
     if (strcmp(verb, "MAP") == 0) {
         if (busy()) { error(id, F("BUSY")); return; }
         if (strlen(args) != 24) { error(id, F("SYNTAX")); return; }
@@ -151,7 +179,8 @@ void processFrame() {
         }
         HalfSquarePoint points[BoardController::MAX_WAYPOINTS];
         for (uint8_t i = 0; i < length / 2; ++i) {
-            const int8_t x = halfCoordinate(args[2 * i]), y = halfCoordinate(args[2 * i + 1]);
+            const int8_t x = halfCoordinate(args[2 * i]);
+            const int8_t y = halfCoordinate(args[2 * i + 1]);
             if (x < 0 || y < 0) { error(id, F("SYNTAX")); return; }
             points[i] = {x, y};
         }
@@ -187,9 +216,7 @@ void processFrame() {
         Serial.print(F(" I=")); Serial.print(Config::END_CLEARANCE_MM, 4);
         Serial.print(F(" PPM=")); Serial.println(Config::PULSES_PER_MM, 4);
     } else if (strcmp(verb, "STOP") == 0) {
-        board.cancel(); xCalibration.cancel(); yCalibration.cancel(); homingAxis = -1;
-        if (pendingId) error(pendingId, F("CANCELED"));
-        pending = Pending::None; pendingId = 0;
+        stopMotion();
         done(id, F("STOP"));
     } else if (strcmp(verb, "SAVE") == 0) {
         if (busy()) error(id, F("BUSY"));
@@ -208,13 +235,10 @@ void readCommand() {
     if (Serial.available() == 0) return;
     const char c = Serial.read();
     if (!framedInput) {
+        // Ignore all idle bytes except a frame start and the bench stop.
         if (c == '@') { framedInput = true; frameLength = 0; frameOverflow = false; }
         // One-byte bench stop remains available outside frames.
-        else if (c == 'x') {
-            board.cancel(); xCalibration.cancel(); yCalibration.cancel(); homingAxis = -1;
-            if (pendingId) error(pendingId, F("CANCELED"));
-            pending = Pending::None; pendingId = 0;
-        }
+        else if (c == 'x') stopMotion();
         return;
     }
     if (c == '\r' || c == '\n') {
@@ -237,6 +261,7 @@ void setup() {
 }
 
 void loop() {
+    // Keep both state machines responsive before consuming one serial byte.
     updateHoming();
     board.update();
     if (pending == Pending::Carry) {
@@ -244,7 +269,7 @@ void loop() {
         if (result != BoardController::Result::None) {
             if (result == BoardController::Result::Complete) done(pendingId, F("CARRY"));
             else error(pendingId, F("MOTION"));
-            pending = Pending::None; pendingId = 0;
+            clearPending();
         }
     }
     readCommand();

@@ -37,6 +37,9 @@ BoardController::StartError BoardController::startCarry(
     const HalfSquarePoint parkPoint = hasParking ? locationHalf(parking) : HalfSquarePoint{0, 0};
     for (uint8_t i = 0; i < count; ++i) {
         const HalfSquarePoint p = points[i];
+        // Odd/odd points are square centers; even/even points are grid intersections
+        // and parking slots. Only a parking approach may visit an empty
+        // adjacent square center between its source and destination.
         if (p.x < 0 || p.x > 16 || p.y < 0 || p.y > 16 ||
             (p.x & 1) != (p.y & 1)) return StartError::Route;
         const bool square = (p.x & 1) != 0;
@@ -52,6 +55,9 @@ BoardController::StartError BoardController::startCarry(
         if (i == 0) continue;
         const HalfSquarePoint previous = points[i - 1];
         const int8_t dx = p.x - previous.x, dy = p.y - previous.y;
+        // Even/even legs follow the grid (including 45-degree diagonals);
+        // odd/odd to odd/odd is forbidden. A parity change is one diagonal
+        // step into or out of a square center/parking approach.
         if (square == ((previous.x & 1) != 0)) {
             // A 45-degree grid diagonal may pass through an empty square center.
             // The occupied-center check below still rejects a standing piece.

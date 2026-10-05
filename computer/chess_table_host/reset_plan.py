@@ -75,6 +75,17 @@ def plan_reset(
         actions.append(transfer)
         return True
 
+    def accessible_after(transfer: Transfer) -> set[int]:
+        """Probe parking exits on copies; candidate checks never mutate the plan."""
+        trial_squares = dict(squares)
+        trial_slots = list(slots)
+        _apply_action(trial_squares, trial_slots, transfer)
+        return _accessible_parking(trial_slots, trial_squares)
+
+    def preserves_remaining_exits(transfer: Transfer) -> bool:
+        """A parked pickup must leave every other occupied slot retrievable."""
+        return len(accessible_after(transfer)) == sum(piece is not None for piece in slots) - 1
+
     def try_direct_home(name: str) -> bool:
         """Return a board piece without closing an occupied slot's exit."""
         if squares[name] == target.get(name):
@@ -83,11 +94,8 @@ def plan_reset(
         before = _accessible_parking(slots, squares)
         for home in vacant_homes(squares[name], source):
             destination = BoardSquare(home)
-            trial_squares = dict(squares)
-            trial_slots = list(slots)
-            _apply_action(trial_squares, trial_slots,
-                          Transfer(squares[name], source, destination, "reset_board"))
-            if not before.issubset(_accessible_parking(trial_slots, trial_squares)):
+            trial = Transfer(squares[name], source, destination, "reset_board")
+            if not before.issubset(accessible_after(trial)):
                 continue
             if try_transfer(source, destination):
                 return True
@@ -110,11 +118,8 @@ def plan_reset(
         )
         for name in destinations:
             destination = BoardSquare(name)
-            trial_squares = dict(squares)
-            trial_slots = list(slots)
-            _apply_action(trial_squares, trial_slots,
-                          Transfer(squares[source_name], source, destination, "reset_board"))
-            after = _accessible_parking(trial_slots, trial_squares)
+            trial = Transfer(squares[source_name], source, destination, "reset_board")
+            after = accessible_after(trial)
             if not before.issubset(after) or (opening is not None and opening not in after):
                 continue
             if try_transfer(source, destination):
@@ -194,13 +199,8 @@ def plan_reset(
             destinations = vacant_homes(slots[index], source)
             for name in destinations:
                 destination = BoardSquare(name)
-                trial_squares = dict(squares)
-                trial_slots = list(slots)
-                _apply_action(trial_squares, trial_slots,
-                              Transfer(slots[index], source, destination, "reset_board"))
-                if len(_accessible_parking(trial_slots, trial_squares)) != sum(
-                    piece is not None for piece in trial_slots
-                ):
+                trial = Transfer(slots[index], source, destination, "reset_board")
+                if not preserves_remaining_exits(trial):
                     continue
                 if try_transfer(source, destination):
                     chosen = True
@@ -234,13 +234,8 @@ def plan_reset(
                 )
                 for name in destinations:
                     destination = BoardSquare(name)
-                    trial_squares = dict(squares)
-                    trial_slots = list(slots)
-                    _apply_action(trial_squares, trial_slots,
-                                  Transfer(slots[index], source, destination, "reset_board"))
-                    if len(_accessible_parking(trial_slots, trial_squares)) != sum(
-                        piece is not None for piece in trial_slots
-                    ):
+                    trial = Transfer(slots[index], source, destination, "reset_board")
+                    if not preserves_remaining_exits(trial):
                         continue
                     if try_transfer(source, destination):
                         chosen = True

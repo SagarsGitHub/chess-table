@@ -25,6 +25,7 @@ bool AxisCalibration::start(float savedSpanMm) {
         return false;
     }
     savedSpeed_ = axis_.speedMmPerSecond();
+    // First get clear of any pressed end switch; otherwise search for MIN.
     if (axis_.minLimitTriggered()) {
         move(Stage::BackoffMin, Config::CALIBRATION_BACKOFF_MM,
              Config::CALIBRATION_LATCH_MM_PER_SEC);
@@ -74,6 +75,7 @@ void AxisCalibration::update() {
     const bool min = axis_.minLimitTriggered();
     const bool max = axis_.maxLimitTriggered();
     const uint32_t now = millis();
+    // These guards apply to every stage, including stationary confirmation.
     if (min && max) { fail(F("Both limits triggered during calibration.")); return; }
     if (static_cast<uint32_t>(now - stageStartedMs_) >= Config::CALIBRATION_STAGE_TIMEOUT_MS) {
         fail(F("Calibration stage timed out.")); return;
@@ -90,6 +92,8 @@ void AxisCalibration::update() {
     const bool confirming = stage_ == Stage::ConfirmMin || stage_ == Stage::ConfirmMinLatch ||
         stage_ == Stage::ConfirmMax || stage_ == Stage::ConfirmMaxLatch;
     if (confirming) {
+        // Search/latch stops at the first raw edge; only then require a stable
+        // closed switch. A release restarts the stationary settle interval.
         const bool triggered = minSide ? min : max;
         if (!triggered) stable_ = false;
         else if (!stable_) { stable_ = true; stableSinceMs_ = now; }
@@ -125,6 +129,8 @@ void AxisCalibration::update() {
         return;
     }
 
+    // A moving seek/latch ends on switch contact. Backoff and parking instead
+    // finish when the commanded motion ends and then verify switch release.
     if (stage_ == Stage::SeekMin || stage_ == Stage::LatchMin) {
         if (min) { confirm(stage_ == Stage::SeekMin ? Stage::ConfirmMin : Stage::ConfirmMinLatch); return; }
     } else if (stage_ == Stage::SeekMax || stage_ == Stage::LatchMax) {

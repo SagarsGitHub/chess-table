@@ -14,16 +14,7 @@ The computer owns **what should happen** in a game. The Arduino owns **how to ex
 | Player and engine | Accept human UCI input, run Stockfish, and provide optional supervision prompts and game status. | No engine or user account logic. |
 | Physical truth | Require manual UCI entry for human moves. Track expected board and slot occupancy from completed operations. Offer optional `--supervised` confirmation during testing; require inspection and reconciliation after uncertain outcomes. | Report switch/motion/magnet state. A completed step count is not a piece-presence measurement. |
 
-## Host module map
-
-| Module | Responsibility |
-| --- | --- |
-| `planner.py`, `routing.py` | Legal move transfers, reachable parking choices, and measured carry routes. |
-| `physical.py`, `reset_plan.py` | Expected physical inventory, promoted-pawn replay, and pure full-reset preflight. Neither sends motor commands. |
-| `checkpoint.py`, `game.py`, `game_errors.py` | Versioned persistence, game orchestration, reconciliation, and shared state errors. |
-| `wire.py`, `serial_link.py` | Frame encoding and ID-matched controller communication. |
-| `host_config.py`, `link_adapters.py` | Shared settings, simulation, and serial transcript adapters. |
-| `play.py`, `gui.py`, `gui_http.py`, `gui_static/` | CLI, browser session, HTTP handler, and interface over the same game runner and checkpoints. `build_gui.py` combines browser source modules into the served `app.js`. |
+The [computer module map](../computer/README.md#code-map) lists implementation ownership. `physical.py` and `reset_plan.py` plan expected state and full reset without sending motor commands; `game.py` coordinates execution and reconciliation.
 
 ## Operation order
 

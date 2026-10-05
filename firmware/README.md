@@ -1,89 +1,22 @@
-# Chess table Uno firmware
+# Uno firmware
 
-Arduino Uno R3 / PlatformIO firmware for two M415B drivers, TR6x12 actuators,
-1/8 microstepping, four normally-open limit switches, and an active-HIGH magnet
-relay. Travel is 150 mm/s with the magnet off; carrying is 50 mm/s with
-400 mm/s² acceleration. No motion starts at boot. The older one-letter motion
-and fixture commands are available in Git history; the shipped firmware uses
-the framed host protocol below.
+PlatformIO firmware for an Arduino Uno R3, two M415B drivers, TR6x12 actuators at 1/8 microstepping, four normally-open limit switches, and an active-HIGH magnet relay. No motion starts at boot. The host supplies expected occupancy; the Uno has no piece sensors.
 
-`src/main.cpp` owns hardware startup, homing, and the serial command parser.
-`BoardController.cpp` owns geometry and the declared piece map;
-`BoardControllerRoute.cpp` validates full routes and converts coordinates;
-`BoardControllerMotion.cpp` advances motors and magnet through nonblocking
-stages and handles faults. `include/BoardCoordinates.h` defines the parking
-coordinate mapping shared with the host. This separation keeps route checks
-ahead of motion.
+| File | Responsibility |
+| --- | --- |
+| `src/main.cpp` | Startup, homing, and framed command parser. |
+| `src/BoardController.cpp` | Measured geometry and declared occupancy. |
+| `src/BoardControllerRoute.cpp` | Full-route validation and coordinate conversion before motion. |
+| `src/BoardControllerMotion.cpp` | Nonblocking motors, magnet, and faults. |
+| `include/BoardCoordinates.h` | Square and parking mapping shared with the host. |
 
 ## Computer link
 
-Use 115200 baud and one ASCII request per line:
+The Uno accepts version 1 framed ASCII requests at 115200 baud: `HELLO`, `STATUS`, `GEOM`, `HOME`, `REF`, `SAVE`, `MAP`, `CARRY`, and `STOP`. See the [serial protocol](../docs/PROTOCOL.md) for frame IDs, replies, bitmap and waypoint encoding, errors, and recovery rules. The maximum request line is 96 bytes including the newline. An unframed `x` remains available as a bench stop.
 
-```text
-@<id> HELLO
-@<id> STATUS
-@<id> GEOM
-@<id> HOME
-@<id> REF
-@<id> SAVE
-@<id> MAP <24-uppercase-hex>
-@<id> CARRY <source> <destination> <waypoints>
-@<id> STOP
-```
+After a reboot, the host must run `REF` or `HOME`, read live `GEOM`, reconcile the pieces, and send `MAP` before carrying. EEPROM stores measured geometry, not a live carriage reference or occupancy. `HOME` measures both axes; `REF` uses saved geometry and touches the MIN limits. `MAP` declares occupancy without sensing it. `DONE CARRY` follows the destination magnet-release dwell and confirms commanded steps, not physical delivery.
 
-IDs are decimal 1..65535 and strictly increase within one boot session. They
-do not wrap. A recognized ID gets `@<id> ACK`, then exactly one
-`@<id> DONE <verb> ...` or `@<id> ERR <code>`. A pending ID may be resent and
-gets another ACK without restarting motion. A completed or older ID gets
-`ERR DUPLICATE`. The maximum line payload after `@` is 95 bytes. Startup
-emits `!BOOT V=1`; the host must discard its pending request and reconcile
-position and occupancy after a reset. Human-readable diagnostic lines may
-appear between frames.
-
-`HELLO` reports `V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,SAVE,GEOM`.
-`CARRY_DIAG` means the Uno accepts 45-degree grid-to-grid route segments.
-`STATUS` reports `REF`, `BUSY`, `MAP`, and `SAVED` as 0/1 fields.
-`GEOM` requires a live reference and reports measured X/Y travel, board
-origins OX/OY, configured pitch P, inset I, and pulses/mm PPM in millimeters
-with four decimal places. For example, `DONE GEOM X=251.0850 Y=251.9625
-OX=0.5425 OY=0.9813 P=31.2500 I=2.0000 PPM=133.3333` (one wire line).
-HELLO and GEOM return `ERR BUSY` during motion or calibration, keeping their
-long replies out of the switch-monitoring loop.
-`HOME` measures both limits on X and Y; `REF` touches the MIN limits only
-using saved geometry. Their DONE response is sent only after both axes finish
-and the geometry passes validation. `SAVE` writes referenced geometry to
-EEPROM. After a reset, use REF or HOME before any carry, and send MAP again:
-the live carriage reference and occupancy map are not restored from EEPROM.
-
-`MAP` replaces the firmware's 12-byte occupancy bitmap after physical
-reconciliation. Bits 0..63 are a1..h8 in rank-major order; bits 64..95 are
-parking slots P00..P31. Within each byte, the lower numbered location is the
-least significant bit. For example, the starting 32-piece board and empty
-parking is `FFFF00000000FFFF00000000`. MAP is a declaration by the computer;
-the Uno has no piece sensors.
-
-`CARRY` uses decimal source/destination IDs 0..95 and 2..12 waypoints,
-including pickup and delivery. Each waypoint is two base-17 characters for
-half-square X and Y coordinates: `0-9A-G` encode 0..16. For example,
-`CARRY 35 64 79680800` moves d5 to P00 via (7,9), (6,8), (0,8), (0,0).
-Board square centers have odd X/Y; grid intersections and parking slots have
-even X/Y. Diagonal center-to-grid links must be exactly one half-square in
-both axes. Grid-to-grid links may be orthogonal or 45-degree diagonal. A vacant
-edge-square center
-adjacent to the parking endpoint may be an intermediate waypoint.
-
-Before moving, the Uno checks the complete path, matching endpoints, measured
-software bounds, known occupancy, occupied source, empty destination, and
-crossings of occupied centers. Parking-to-parking moves are unsupported. It
-does not measure physical piece clearance; the host must plan a suitable route
-and the loaded route matrix still needs bench validation. `DONE CARRY` is
-sent after the destination magnet-release dwell, when the commanded occupancy
-map is updated. A motion fault returns `ERR MOTION`; STOP during carry returns
-`ERR CANCELED`. Both stop the axes, drop the magnet, and invalidate reference
-and occupancy because physical delivery is uncertain. Preflight errors such
-as `ERR ROUTE`, `ERR MAP`, `ERR REFERENCE`, `ERR GEOMETRY`, and
-`ERR BUSY` do not start a new carry. `ERR SYNTAX` rejects malformed wire
-arguments. A standalone unframed `x` remains as a bench stop.
+The Uno checks route topology, occupied-center crossings, source/destination occupancy, measured bounds, and the 2–12-waypoint limit before moving. Parking-to-parking carries are unsupported. The host chooses parking slots and plans physical clearance; the firmware validates the command it receives.
 
 ## Motion and limits
 
@@ -107,7 +40,7 @@ moved. Vertical and diagonal legs keep the ordinary loaded profile. Empty
 carriage travel remains at 150 mm/s and 1000 mm/s²; HOME/REF use their separate
 seek and latch speeds. The 15-second watchdog applies to each segment,
 including the longest possible grid diagonal or crowded horizontal run.
-Verify both loaded profiles with short carries before a full physical game;
+For a new piece or board geometry, check both loaded profiles with short carries;
 the right settings depend on piece/glass friction and magnetic grip.
 
 The board pitch is 31.25 mm. a1 is nearest MIN/MIN; files increase in +X and
@@ -115,8 +48,10 @@ ranks in +Y. Parking slots are perimeter grid intersections: P00..P08 bottom,
 P09..P17 top, P18..P24 left, and P25..P31 right. Outer grid coordinates are
 clamped inward to the measured software inset. Motion is open-loop, so DONE
 confirms commanded steps and relay timing, not physical pickup or delivery.
-The reported magnet-release reset remains an unresolved hardware issue; see
-repository issue #1 before relying on a full loaded game.
+The reported magnet-release reset still has no verified electrical cause;
+diagnosis in [issue #1](https://github.com/SagarsGitHub/chess-table/issues/1) is deferred.
+
+## Wiring
 
 | Connection | X | Y |
 | --- | --- | --- |

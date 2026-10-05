@@ -432,29 +432,37 @@ class SerialLink:
             # Temporary one-letter diagnostic mode prints human-readable lines.
             return None
         if line.startswith("!"):
-            match = _EVENT.fullmatch(line)
-            if match is None:
-                return self._protocol_failure("malformed unsolicited frame")
-            event = LinkEvent(match.group(1), tuple((match.group(2) or "").split()))
-            with self._state_lock:
-                self._events.append(event)
-                if event.name == "BOOT":
-                    interrupted_request = bool(self._pending)
-                    self.boot_count += 1
-                    self.physical_state_uncertain = True
-                    self.capabilities = None
-                    self._fail_all_locked(ControllerReset("controller booted; reconcile physical state"))
-                    # Start a fresh ID epoch only when idle. If a request was
-                    # already sent, its reply may still be buffered after the
-                    # BOOT frame. Keep advancing IDs so that late reply cannot
-                    # be mistaken for a retried command.
-                    if not interrupted_request:
-                        self._next_id = 1
-                        self._abandoned_ids.clear()
-                elif event.name == "FAULT":
-                    self.physical_state_uncertain = True
-                    self._fail_all_locked(ControllerFault("controller reported a fault"))
-            return event
+            return self._handle_event_frame(line)
+        return self._handle_response_frame(line)
+
+    def _handle_event_frame(self, line: str) -> LinkEvent:
+        """Record an unsolicited event; BOOT and FAULT retire pending commands."""
+        match = _EVENT.fullmatch(line)
+        if match is None:
+            return self._protocol_failure("malformed unsolicited frame")
+        event = LinkEvent(match.group(1), tuple((match.group(2) or "").split()))
+        with self._state_lock:
+            self._events.append(event)
+            if event.name == "BOOT":
+                interrupted_request = bool(self._pending)
+                self.boot_count += 1
+                self.physical_state_uncertain = True
+                self.capabilities = None
+                self._fail_all_locked(ControllerReset("controller booted; reconcile physical state"))
+                # Start a fresh ID epoch only when idle. If a request was
+                # already sent, its reply may still be buffered after the
+                # BOOT frame. Keep advancing IDs so that late reply cannot
+                # be mistaken for a retried command.
+                if not interrupted_request:
+                    self._next_id = 1
+                    self._abandoned_ids.clear()
+            elif event.name == "FAULT":
+                self.physical_state_uncertain = True
+                self._fail_all_locked(ControllerFault("controller reported a fault"))
+        return event
+
+    def _handle_response_frame(self, line: str) -> Completion | None:
+        """Match ACK, DONE, or ERR to the pending command ID."""
         match = _REPLY.fullmatch(line)
         if match is None:
             return self._protocol_failure("malformed response frame")

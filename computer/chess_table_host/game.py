@@ -89,7 +89,9 @@ class GameRunner:
         if self.state.pending is not None:
             raise ReconciliationRequired("finish or reconcile the pending move first")
         board = self.state.board()
+
         def plan_with_selector(ignore_piece_clearance: bool) -> MovePlan:
+            """Choose parking using the same clearance policy as route preflight."""
             selector = ReachableParkingSlotSelector(
                 _occupied_squares(self.state.physical_squares),
                 geometry=geometry, max_waypoints=12,
@@ -110,6 +112,8 @@ class GameRunner:
         squares = dict(self.state.physical_squares)
         slots = list(self.state.physical_parking)
         physical_actions: list[Action] = []
+        # Captures, castling, and promotions can require several carries. Route
+        # each leg against the position left by the preceding simulated leg.
         for action in logical_plan.actions:
             if isinstance(action, Transfer):
                 physical_piece = _piece_at(squares, slots, action.source)
@@ -190,6 +194,8 @@ class GameRunner:
                 if approve_route is not None and not approve_route(action, route, wire):
                     raise MoveDeferred("route was not approved; no new CARRY was sent")
                 link.set_map(self.current_map())
+                # Save uncertainty before CARRY: a disconnect after this point
+                # must never be mistaken for a transfer that was not started.
                 pending.phase = "in_flight"
                 pending.active_route = wire
                 self.state.events.append({
@@ -199,6 +205,8 @@ class GameRunner:
                 })
                 self.store.save(self.state)
                 completion = link.carry(*wire)
+                # DONE means the controller finished; the physical snapshot
+                # advances only after the confirmation step below.
                 pending.phase = "awaiting_confirmation"
                 self.state.events.append({
                     "event": "carry_done", "uci": pending.uci,
@@ -251,6 +259,7 @@ class GameRunner:
             if approve_route is not None and not approve_route(action, route, wire):
                 raise MoveDeferred("reset route was not approved; no new CARRY was sent")
             link.set_map(self.current_map())
+            # Keep reset recovery at the same uncertainty boundary as a move.
             pending.phase = "in_flight"
             pending.active_route = wire
             self.state.events.append({

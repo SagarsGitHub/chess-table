@@ -340,6 +340,7 @@ def plan_transfer_route(
 
     @lru_cache(maxsize=None)
     def clear(a: HalfSquarePoint, b: HalfSquarePoint) -> bool:
+        """Reject links outside travel bounds or too close to occupied pieces."""
         try:
             start, end = metric(a), metric(b)
         except RouteError:
@@ -361,6 +362,7 @@ def plan_transfer_route(
     # so the full segment must be checked against every occupied center.
     @lru_cache(maxsize=None)
     def neighbors(here: HalfSquarePoint) -> tuple[HalfSquarePoint, ...]:
+        """Offer candidate grid links and short approaches to route endpoints."""
         if here.x % 2 and here.y % 2:
             next_points = _adjacent_intersections(here)
             if isinstance(destination, ParkingSlot) and here in edge_centers:
@@ -441,9 +443,12 @@ def plan_transfer_route(
         # edges when a piece can press into the route from both sides.
         return segment_length(a, b) * (5.0 if nearby == 2 else 1.0 if nearby == 1 else 0.0)
 
-    def shortest_route(waypoint_limit: int | None) -> tuple[HalfSquarePoint, ...] | None:
+    def least_cost_route(waypoint_limit: int | None) -> tuple[HalfSquarePoint, ...] | None:
+        """Prefer open, smooth routes while respecting a waypoint limit."""
         start: State = first if waypoint_limit is None else (source_point, None, False, 1)
-        # Risk-weighted length, actual length, turns, retained waypoints, links.
+        # Compare risk-weighted length first, then actual length, turns, saved
+        # waypoints, and links. The straight-line heuristic never exceeds the
+        # remaining weighted travel cost.
         initial_cost = (0.0, 0.0, 0, 1, 0)
         best: dict[State, tuple[float, float, int, int, int]] = {start: initial_cost}
         previous: dict[State, State | None] = {start: None}
@@ -487,6 +492,7 @@ def plan_transfer_route(
         return None
 
     def fewest_waypoints() -> tuple[HalfSquarePoint, ...]:
+        """Find the minimum wire capacity needed when the limit has no route."""
         best: dict[State, tuple[int, int]] = {first: (1, 0)}
         previous: dict[State, State | None] = {first: None}
         heap = [(1, 0, 0, first)]
@@ -511,11 +517,13 @@ def plan_transfer_route(
                     heappush(heap, (next_cost[0], next_cost[1], serial, next_state))
         raise NoRouteError(no_route_message)
 
-    compressed = shortest_route(None)
+    compressed = least_cost_route(None)
     if compressed is None:
         raise NoRouteError(no_route_message)
     if max_waypoints is not None and len(compressed) > max_waypoints:
-        compressed = shortest_route(max_waypoints)
+        # A lowest-cost route may exceed the firmware capacity even when a
+        # less comfortable but valid route fits in the packet.
+        compressed = least_cost_route(max_waypoints)
         if compressed is None:
             required = len(fewest_waypoints())
             raise RouteTooLongError(required, max_waypoints)

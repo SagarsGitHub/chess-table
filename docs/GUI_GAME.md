@@ -7,10 +7,7 @@ the GUI and leave the pieces in place for the table to carry. A matched
 controller `DONE CARRY` advances the expected position in normal play. An
 uncertain transfer needs physical inspection and reconciliation.
 
-The parking view places all 32 labeled slots around an 8×8 board outline in a
-9×9 perimeter map. Board and parked pieces use SVG shapes over contrasting
-colors, and flipping the board also flips the parking view. These displays
-show checkpointed expected locations; they do not detect actual pieces.
+The parking view shows all 32 labeled slots around the board and flips with it. Piece icons show checkpointed expected locations, not detected positions.
 
 ## Start a simulated game
 
@@ -21,15 +18,16 @@ virtual environment if needed:
 cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+engine_path=/mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
 ```
 
 The checked-in config points to a Windows serial port and Stockfish folder.
-The command below gives the WSL path to the downloaded Stockfish executable.
+Change `engine_path` to the executable on another machine.
 Use a fresh checkpoint filename for each `--new` game:
 
 ```bash
 sim_state="runs/gui-sim-$(date +%Y%m%d-%H%M%S).json"
-.venv/bin/python -m chess_table_host.gui --simulate --new --state "$sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
+.venv/bin/python -m chess_table_host.gui --simulate --new --state "$sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --engine "$engine_path"
 ```
 
 Open the printed `http://localhost:8765/` address in a browser on the same
@@ -44,7 +42,7 @@ To stop the local server, press Ctrl+C in its WSL terminal. Resume the saved
 simulation with the same state file and geometry fixture:
 
 ```bash
-.venv/bin/python -m chess_table_host.gui --simulate --resume --state "$sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
+.venv/bin/python -m chess_table_host.gui --simulate --resume --state "$sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --engine "$engine_path"
 ```
 
 The default browser port is 8765. Use `--http-port NUMBER` if another local
@@ -63,8 +61,9 @@ watch the table during every carry.
 ```bash
 cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
 serial_port=/dev/ttyACM0  # replace with the detected WSL serial device
+engine_path=/mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
 physical_state="runs/gui-physical-$(date +%Y%m%d-%H%M%S).json"
-.venv/bin/python -m chess_table_host.gui --new --state "$physical_state" --port "$serial_port" --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
+.venv/bin/python -m chess_table_host.gui --new --state "$physical_state" --port "$serial_port" --engine "$engine_path"
 ```
 
 Open the printed local URL, choose the play mode, and select **Start game**.
@@ -76,46 +75,19 @@ always pass the detected `/dev/...` device with `--port` in WSL. A physical
 session writes the serial transcript beside its checkpoint as
 `<state-name>.serial.jsonl`.
 
-Normal play does not ask for confirmation after every completed carry. The
-configured tight-route fallback may route closer to occupied pieces than the
-18 mm circular footprint model allows while preserving center avoidance,
-travel limits, and the 12-waypoint bound. Watch neighboring pieces. Pass
-`--strict-clearance` to disable this fallback for a session.
+Normal play needs no confirmation after a matched `DONE CARRY`. Tight-route fallback may approach occupied pieces more closely than the 18 mm footprint model allows, while still avoiding occupied centers and obeying travel and 12-waypoint limits; `--strict-clearance` disables it. The host favors detours around long crowded horizontal passages, but that preference still needs a loaded trial with off-center neighbors. Loaded travel is 50 mm/s at 400 mm/s², slowing to 30 mm/s at 250 mm/s² on horizontal grid legs beside occupied squares. See [routing](ROUTING.md) and the [roadmap](ROADMAP.md#immediate-next-actions).
 
-Long horizontal passages between standing pieces have caused excessive
-interaction when neighbors were slightly off-center, even with the slower
-crowded-motion profile. Check piece centering and neighboring displacement
-during these carries. The host now strongly deprioritizes long crowded
-horizontal passages. This route preference has passed software replanning but
-still needs a loaded trial; see [routing](ROUTING.md) and the
-[roadmap](ROADMAP.md#immediate-next-actions).
-
-The Uno carries at 50 mm/s and 400 mm/s²; magnet-on horizontal grid segments
-beside occupied squares slow to 30 mm/s and 250 mm/s². The user reports longer
-runs work overall, with the crowded-horizontal limitation above. The PTFE
-dry-lube trial did not help and is discontinued. Firmware changes still
-require flashing the Uno: stop the GUI first to release the serial port, then
-resume the same checkpoint. Refreshing the browser only updates the interface.
+After firmware changes, stop the GUI to release the serial port, flash the Uno, and resume the same checkpoint. A browser refresh changes only the interface.
 
 After stopping and closing the GUI server, resume the same physical checkpoint:
 
 ```bash
-.venv/bin/python -m chess_table_host.gui --resume --state "$physical_state" --port "$serial_port" --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
+.venv/bin/python -m chess_table_host.gui --resume --state "$physical_state" --port "$serial_port" --engine "$engine_path"
 ```
 
-The 2026-10-05 physical GUI game and reset are recorded in the
-[roadmap](ROADMAP.md#physical-progress-recorded-2026-10-05). Its checkpoint is
-back at the standard position after a 126-ply draw and a reset that required
-fault recovery. To reopen it after checking the actual pieces and empty
-parking against the displayed state:
+In a new WSL shell, set `engine_path`, `serial_port`, and `physical_state` again before this command.
 
-```bash
-cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
-.venv/bin/python -m chess_table_host.gui --resume --state runs/gui-physical-20261005-152550.json --port /dev/ttyACM0 --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
-```
-
-Use `--resume` for this checkpoint; `--new` requires a different filename.
-The played game is preserved in its pre-reset archive.
+The [roadmap](ROADMAP.md#physical-progress-recorded-2026-10-05) records the accepted 126-ply game and recovered reset. Its played game remains in a pre-reset archive. Use `--resume` for an existing checkpoint and a fresh filename for `--new`.
 
 ## Pause, recover, and reset
 
@@ -150,10 +122,4 @@ If a reset transfer is interrupted, reconcile it in the same way, then
 continue the saved plan. An uncertain chess move must be physically inspected
 and reconciled before a reset can begin.
 
-## Acceptance record
-
-Keep the checkpoint, serial transcript, and observations about piece slip,
-neighboring movement, stops, and reconciliation. The user accepts the physical
-game, reset, and recovery path. The [roadmap](ROADMAP.md) tracks crowded-route
-avoidance, unrecorded promotion and interrupted-capture cases, and the
-deferred electrical diagnosis.
+Keep the checkpoint, serial transcript, and notes on slip, neighboring movement, stops, and reconciliation. The [roadmap](ROADMAP.md) tracks accepted play/reset/recovery and remaining physical checks.

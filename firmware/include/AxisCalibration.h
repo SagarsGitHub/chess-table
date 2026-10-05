@@ -16,9 +16,14 @@ public:
     const __FlashStringHelper *errorMessage() const { return error_; }
 
 private:
+    // Full HOME measures MIN to MAX; REF stops after the MIN latch and reuses
+    // the saved span. Both finish parked inside the measured travel range.
     enum class Stage : uint8_t {
-        Idle, ClearMax, SeekMin, ConfirmMin, BackoffMin, LatchMin, ConfirmMinLatch,
-        LeaveMin, SeekMax, ConfirmMax, BackoffMax, LatchMax, ConfirmMaxLatch, Park
+        Idle,
+        ClearMax,
+        SeekMin, ConfirmMin, BackoffMin, LatchMin, ConfirmMinLatch, LeaveMin,
+        SeekMax, ConfirmMax, BackoffMax, LatchMax, ConfirmMaxLatch,
+        Park
     };
     void move(Stage stage, float mm, float speed);
     void confirm(Stage stage);

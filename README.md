@@ -4,7 +4,7 @@ Python host and Arduino Uno firmware for an automated chessboard with 32 perimet
 
 ## Status
 
-A physical GUI game reached a 126-ply draw with 20 parked pieces. Its board reset returned the saved state to 32 starting pieces and empty parking after a motion fault, reboot, and reconciliation. The user reports that the subsequent slower carry profiles work on the board. A repeatable fault-free loaded game, special-move coverage, and the reported magnet-release reset remain open acceptance work. See the [roadmap and evidence](docs/ROADMAP.md).
+The user accepts physical play, board reset, and fault recovery after a 126-ply GUI game and a recovered reset to all 32 starting pieces. Longer runs work overall. Long horizontal carries through crowded pieces can still disturb off-center neighbors; the host now favors detours, pending a loaded trial. Physical promotion and full parking-slot coverage remain unrecorded. The PTFE trial is closed, and electrical reset diagnosis is deferred. See the [roadmap](docs/ROADMAP.md).
 
 ## Start in WSL
 
@@ -27,7 +27,7 @@ For the browser game, follow the [GUI runbook](docs/GUI_GAME.md). For CLI smoke 
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Host and Uno responsibilities and recovery boundary. |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Framed serial commands and occupancy encoding. |
 | [`docs/ROUTING.md`](docs/ROUTING.md) | Route geometry and clearance behavior. |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones, physical evidence, and remaining acceptance work. |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Accepted milestones, physical evidence, and remaining work. |
 | [`legacy/chess_automated/`](legacy/chess_automated/) | Original reference project; see [provenance](docs/PROVENANCE.md). |
 
 The repository retains the history of [SagarsGitHub/chess_automated](https://github.com/SagarsGitHub/chess_automated) and the selected workspace firmware snapshot. The original client's serial protocol differs from the integrated host and Uno protocol; new work belongs in `computer/` and `firmware/`.

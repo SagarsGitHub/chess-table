@@ -66,7 +66,8 @@ standalone file remains compatible with an already-running GUI server.
 
 The clearance override can route closer to standing pieces after strict
 clearance fails, while still avoiding occupied centers and enforcing the Uno's
-12-waypoint and measured travel limits. It does not prove real clearance.
+12-waypoint and measured travel limits. The planner strongly penalizes long
+crowded horizontal legs. Neither choice proves physical clearance.
 Standard chess is supported; Chess960 castling and automatic piece sensing are
 out of scope. See the [architecture](../docs/ARCHITECTURE.md),
 [routing notes](../docs/ROUTING.md), and [roadmap](../docs/ROADMAP.md) for the

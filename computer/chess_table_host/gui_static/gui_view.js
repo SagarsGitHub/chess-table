@@ -121,7 +121,14 @@ function pieceToken(symbol, extraClass = "") {
   return token;
 }
 
-// A promoted pawn can have a different logical role and physical symbol.
+// Promotion changes the legal role, but the same pawn remains on the table.
+function physicalPawnStandsInFor(logicalPiece, physicalPiece) {
+  return Boolean(physicalPiece && logicalPiece && physicalPiece.toLowerCase() === "p"
+    && logicalPiece.toLowerCase() !== "p"
+    && (physicalPiece === physicalPiece.toUpperCase()) === (logicalPiece === logicalPiece.toUpperCase()));
+}
+
+// Render either committed chess roles or the expected physical checkpoint.
 export function renderBoard() {
   if (ui.dragOrigin) return;
   const signature = boardSignature();
@@ -156,10 +163,7 @@ export function renderBoard() {
         button.classList.add("has-piece");
         button.append(pieceToken(symbol));
         button.draggable = canMove() && moves.some(move => move.slice(0, 2) === square);
-        const physicalPawnStandIn = physical[square]?.toLowerCase() === "p" && logical[square]
-          && logical[square].toLowerCase() !== "p" &&
-          (physical[square] === physical[square].toUpperCase()) === (logical[square] === logical[square].toUpperCase());
-        if (physicalPawnStandIn && (isPhysical || !activeOperation())) {
+        if (physicalPawnStandsInFor(logical[square], physical[square]) && (isPhysical || !activeOperation())) {
           const standIn = document.createElement("span");
           standIn.className = "stand-in";
           standIn.title = `Physical ${pieceDescription(physical[square])} stands in for ${pieceDescription(logical[square])}`;

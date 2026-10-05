@@ -277,6 +277,7 @@ def _validate_script(runner: GameRunner, scripted: list[str]) -> None:
 
 
 def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: RouteGeometry) -> None:
+    """Advance scripted, human, or engine moves through one checkpointed runner."""
     scripted = args.moves or []
     _validate_script(runner, scripted)
     engine = None
@@ -295,6 +296,8 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                     print(board.outcome(claim_draw=True))
                     break
                 script_index = len(runner.state.moves)
+                # A script takes precedence until exhausted; otherwise choose
+                # the engine for its side (or both sides in self-play mode).
                 if script_index < len(scripted):
                     uci = scripted[script_index]
                 elif engine is not None and (
@@ -335,6 +338,7 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                     continue
 
             def approve_route(action, route, wire) -> bool:
+                """Show the exact controller carry before optional supervision."""
                 points = " -> ".join(f"({point.x},{point.y})" for point in route.points)
                 print("Route for", _describe_action(action), ":", points)
                 print("CARRY arguments:", " ".join(wire))
@@ -346,6 +350,7 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                 )
 
             def confirm(action: Action) -> bool:
+                """Decide when the saved physical snapshot may advance."""
                 if args.simulate:
                     print("SIM CONFIRMED", _describe_action(action))
                     return True
@@ -459,6 +464,7 @@ def _list_ports(configured_port: str) -> int:
 
 
 def _main(argv: list[str] | None = None) -> int:
+    """Parse game options, load the checkpoint, then run a hardware or simulated session."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                         help="game settings JSON (default: computer/config.json)")
@@ -544,6 +550,8 @@ def _main(argv: list[str] | None = None) -> int:
     runner = GameRunner(state, store, allow_tight_routes=args.allow_tight_routes)
     link = None
     try:
+        # Startup reconciliation happens before opening a live serial port.
+        # A saved uncertain carry cannot be silently replayed on reconnect.
         if not args.simulate:
             if not _reconcile_at_start(runner, automatic=not args.supervised):
                 return 0

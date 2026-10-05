@@ -190,39 +190,45 @@ class GameState:
         if not isinstance(self.moves, list) or any(not isinstance(move, str) for move in self.moves):
             raise GameStateError("invalid move history")
         if self.reset is not None:
-            if self.pending is not None:
-                raise GameStateError("move and board reset cannot both be pending")
-            if self.initial_fen != chess.Board().fen():
-                raise GameStateError("board reset requires a standard-start game")
-            reset = self.reset
-            if (not reset.actions or any(not isinstance(action, Transfer)
-                                         for action in reset.actions)):
-                raise GameStateError("pending reset requires transfer actions")
-            if (type(reset.next_action) is not int or
-                    not 0 <= reset.next_action < len(reset.actions) or
-                    reset.phase not in {"ready", "in_flight", "awaiting_confirmation"}):
-                raise GameStateError("invalid reset action cursor")
-            if (reset.phase == "ready") != (reset.active_route is None):
-                raise GameStateError("inconsistent reset phase and route")
-            squares = self.expected_physical_squares()
-            slots = list(self.committed_parking.slots)
-            # Reconstruct the confirmed reset prefix, then prove the complete
-            # saved plan would restore every piece before trusting the file.
-            for action in reset.actions[:reset.next_action]:
-                _apply_action(squares, slots, action)
-            if squares != self.physical_squares or slots != self.physical_parking:
-                raise GameStateError("physical checkpoint differs from confirmed reset prefix")
-            for action in reset.actions[reset.next_action:]:
-                _apply_action(squares, slots, action)
-            if squares != _board_pieces(chess.Board()) or any(slots):
-                raise GameStateError("reset actions do not restore the standard position")
+            self._validate_reset(self.reset)
             return
         if self.pending is None:
             if (self.physical_squares != self.expected_physical_squares() or
                     tuple(self.physical_parking) != self.committed_parking.slots):
                 raise GameStateError("physical snapshot differs from committed game")
             return
-        pending = self.pending
+        self._validate_pending_move(board, self.pending)
+
+    def _validate_reset(self, reset: PendingReset) -> None:
+        """Check the confirmed reset prefix and the planned final setup."""
+        if self.pending is not None:
+            raise GameStateError("move and board reset cannot both be pending")
+        if self.initial_fen != chess.Board().fen():
+            raise GameStateError("board reset requires a standard-start game")
+        if (not reset.actions or any(not isinstance(action, Transfer)
+                                     for action in reset.actions)):
+            raise GameStateError("pending reset requires transfer actions")
+        if (type(reset.next_action) is not int or
+                not 0 <= reset.next_action < len(reset.actions) or
+                reset.phase not in {"ready", "in_flight", "awaiting_confirmation"}):
+            raise GameStateError("invalid reset action cursor")
+        if (reset.phase == "ready") != (reset.active_route is None):
+            raise GameStateError("inconsistent reset phase and route")
+        squares = self.expected_physical_squares()
+        slots = list(self.committed_parking.slots)
+        # The physical snapshot records only confirmed transfers. Replay that
+        # prefix before checking that the remaining plan reaches home.
+        for action in reset.actions[:reset.next_action]:
+            _apply_action(squares, slots, action)
+        if squares != self.physical_squares or slots != self.physical_parking:
+            raise GameStateError("physical checkpoint differs from confirmed reset prefix")
+        for action in reset.actions[reset.next_action:]:
+            _apply_action(squares, slots, action)
+        if squares != _board_pieces(chess.Board()) or any(slots):
+            raise GameStateError("reset actions do not restore the standard position")
+
+    def _validate_pending_move(self, board: chess.Board, pending: PendingMove) -> None:
+        """Check the legal move and the physical prefix already confirmed."""
         if (not isinstance(pending.next_action, int) or
                 not 0 <= pending.next_action <= len(pending.actions) or
                 pending.phase not in {"ready", "in_flight", "awaiting_confirmation"}):

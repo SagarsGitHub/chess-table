@@ -259,10 +259,13 @@ class GameController:
             error = self._error
             human = self._human
             reset_requested = self._reset_requested.is_set()
-        # in_flight and awaiting_confirmation are normal checkpoints while the
-        # worker still owns a carry. Only an ended worker leaves uncertainty.
+        # Derive controls from both the saved transfer and live worker. An
+        # in-flight checkpoint is normal while its worker still owns the carry;
+        # once that worker ends, the same checkpoint requires inspection.
         uncertain = not busy and action is not None and action["phase"] != "ready"
         game_over = board.is_game_over(claim_draw=True)
+        # Reconciliation outranks every other phase; a graceful reset request
+        # outranks the worker's current activity so the operator sees the plan.
         if uncertain:
             phase = "reconciliation_required"
         elif busy and reset_requested:
@@ -480,7 +483,11 @@ class GameController:
             self.reset_board()
 
     def _work(self, task) -> None:
-        """Contain worker errors and hand off a completed game to board reset."""
+        """Contain worker errors and hand off a completed game to board reset.
+
+        The handoff keeps one worker registered throughout the transition so
+        HTTP controls cannot start another game between the move and reset.
+        """
         completed = False
         try:
             task()
@@ -546,8 +553,56 @@ class GameController:
         # A matched DONE is controller completion; there is no physical sensor.
         return True
 
+    def _next_move(self, engine: chess.engine.SimpleEngine | None,
+                   geometry: RouteGeometry) -> str | None:
+        """Resume a saved move or select and preflight the next legal move.
+
+        Return ``None`` when play should stop at a move boundary. A reset
+        request must finish a pending chess move, including all capture legs,
+        before the board-reset worker takes ownership.
+        """
+        pending = self.runner.state.pending
+        if self._reset_requested.is_set() and pending is None:
+            return None
+        if pending is not None:
+            if pending.phase != "ready":
+                raise ReconciliationRequired("inspect and reconcile the uncertain carry")
+            return pending.uci
+
+        board = self.runner.state.board()
+        if board.is_game_over(claim_draw=True):
+            self._set_activity("game_over", f"Game complete: {board.result(claim_draw=True)}")
+            return None
+        engine_turn = self._mode == "self_play" or (
+            self._mode == "human_engine" and board.turn != (self._human == "white")
+        )
+        if engine_turn:
+            assert engine is not None
+            self._set_activity("engine_thinking", "Stockfish is choosing a move...")
+            feasible = _feasible_engine_moves(self.runner, geometry)
+            if not feasible:
+                raise GameStateError("no legal engine move passes route preflight")
+            result = engine.play(board, chess.engine.Limit(time=self.engine_time), root_moves=feasible)
+            uci = result.move.uci()
+        else:
+            self._set_activity("human_turn", "Enter a move; leave the physical pieces in place.")
+            while not self._stop.is_set() and not self._reset_requested.is_set():
+                try:
+                    uci = self._moves.get(timeout=0.2)
+                    break
+                except Empty:
+                    continue
+            else:
+                return None
+
+        if self._stop.is_set() or self._reset_requested.is_set():
+            return None
+        self._set_activity("moving", f"Preflighting {uci}...")
+        self.runner.prepare_move(uci, geometry)
+        return uci
+
     def _game_loop(self) -> None:
-        """Choose each legal move and commit its checkpointed physical actions."""
+        """Execute chosen moves until stopped, finished, or ready to reset."""
         link, geometry = self._connection()
         self._set_activity("initializing", "Preparing the game...")
         engine = None
@@ -556,49 +611,8 @@ class GameController:
             engine = chess.engine.SimpleEngine.popen_uci(path)
         try:
             while not self._stop.is_set():
-                pending = self.runner.state.pending
-                if self._reset_requested.is_set() and pending is None:
-                    break
-                if pending is not None:
-                    if pending.phase != "ready":
-                        raise ReconciliationRequired("inspect and reconcile the uncertain carry")
-                    uci = pending.uci
-                else:
-                    board = self.runner.state.board()
-                    if board.is_game_over(claim_draw=True):
-                        self._set_activity("game_over", f"Game complete: {board.result(claim_draw=True)}")
-                        break
-                    engine_turn = self._mode == "self_play" or (
-                        self._mode == "human_engine" and
-                        board.turn != (self._human == "white")
-                    )
-                    if engine_turn:
-                        assert engine is not None
-                        self._set_activity("engine_thinking", "Stockfish is choosing a move...")
-                        feasible = _feasible_engine_moves(self.runner, geometry)
-                        if not feasible:
-                            raise GameStateError("no legal engine move passes route preflight")
-                        result = engine.play(
-                            board, chess.engine.Limit(time=self.engine_time), root_moves=feasible,
-                        )
-                        uci = result.move.uci()
-                        if self._reset_requested.is_set():
-                            break
-                    else:
-                        self._set_activity("human_turn", "Enter a move; leave the physical pieces in place.")
-                        while not self._stop.is_set() and not self._reset_requested.is_set():
-                            try:
-                                uci = self._moves.get(timeout=0.2)
-                                break
-                            except Empty:
-                                continue
-                        else:
-                            break
-                    if self._stop.is_set() or self._reset_requested.is_set():
-                        break
-                    self._set_activity("moving", f"Preflighting {uci}...")
-                    self.runner.prepare_move(uci, geometry)
-                if self._stop.is_set():
+                uci = self._next_move(engine, geometry)
+                if uci is None or self._stop.is_set():
                     break
                 self._set_activity("moving", f"Moving {uci}; waiting for controller completion...")
                 self.runner.execute_pending(

@@ -14,7 +14,7 @@ The host runs `REF` with saved calibration or `HOME` without it, then reads fres
 
 The measured board pitch is 31.25 mm; moving and standing pieces have 18 mm footprints. The configured 0 mm margin is provisional because centering, wobble, and path error have not been measured. Two standing pieces leave a 13.25 mm horizontal gap, less than an 18 mm moving piece. The host tries circular footprint clearance first. With `allow_tight_routes`, it may fall back to a route that avoids occupied centers but passes closer to pieces; the CLI prints `CLEARANCE OVERRIDE`. This never relaxes measured travel bounds, firmware limits, or the 12-waypoint cap. Use `--strict-clearance` to disable fallback for a session. Watch nearby pieces and keep the independent power cutoff available.
 
-The reported magnet-release reset remains tracked in [issue #1](https://github.com/SagarsGitHub/chess-table/issues/1). A successful game command does not certify electrical reliability.
+The reported magnet-release reset remains tracked in [issue #1](https://github.com/SagarsGitHub/chess-table/issues/1); electrical diagnosis is deferred. A successful game command does not certify its root cause.
 
 ## Run from the Coding checkout in WSL
 
@@ -25,7 +25,7 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -q
 ```
 
-The checked-in config has Windows defaults (`COM3` and `~/Documents/stockfish`). In WSL, pass the detected Linux port and the downloaded Stockfish executable's WSL path. Each `--new` game needs a fresh state filename; `--resume` continues that file without replaying completed carries. Checkpoints and serial logs under `computer/runs/` are ignored by Git but should be retained as physical evidence.
+The checked-in config has Windows defaults (`COM3` and `~/Documents/stockfish`). In WSL, pass the detected Linux port and set `engine_path` in the Stockfish examples to the installed executable. Each `--new` game needs a fresh state filename; `--resume` continues that file without replaying completed carries. Checkpoints and serial logs under `computer/runs/` are ignored by Git but should be retained as physical evidence.
 
 ### Connect the Uno to WSL for physical play
 
@@ -76,20 +76,23 @@ The runner preflights the whole next chess move before its first `CARRY`. Its st
 To continue the smoke checkpoint against Stockfish with human White, enter UCI moves without moving pieces by hand:
 
 ```bash
-.venv/bin/python -m chess_table_host.play --resume --state "$physical_state" --port "$serial_port" --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe --human white
+engine_path=/mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe  # change for another machine
+.venv/bin/python -m chess_table_host.play --resume --state "$physical_state" --port "$serial_port" --engine "$engine_path" --human white
 ```
 
 For Stockfish against Stockfish, first use a fresh simulated checkpoint, then a separate physical one starting with all 32 pieces home and parking empty:
 
 ```bash
+engine_path=/mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe  # change for another machine
+serial_port=/dev/ttyACM0  # replace with the detected WSL device
 self_play_sim_state="runs/self-play-sim-$(date +%Y%m%d-%H%M%S).json"
-.venv/bin/python -m chess_table_host.play --simulate --new --state "$self_play_sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --self-play --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe --engine-time 0.005
+.venv/bin/python -m chess_table_host.play --simulate --new --state "$self_play_sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --self-play --engine "$engine_path" --engine-time 0.005
 
 self_play_state="runs/self-play-physical-$(date +%Y%m%d-%H%M%S).json"
-.venv/bin/python -m chess_table_host.play --new --state "$self_play_state" --port "$serial_port" --self-play --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
+.venv/bin/python -m chess_table_host.play --new --state "$self_play_state" --port "$serial_port" --self-play --engine "$engine_path"
 ```
 
-After a checked interruption, resume with the same `--state`, `--self-play`, engine, and connection or simulation arguments. In a new WSL shell, set `serial_port` and the state variable again. Do not resume the older 155-ply physical checkpoint until its stopped `h5h4` carry has been physically reconciled; see the [roadmap evidence](ROADMAP.md#physical-progress-recorded-2026-10-05).
+After a checked interruption, resume with the same `--state`, `--self-play`, engine, and connection or simulation arguments. In a new WSL shell, set `engine_path`, `serial_port`, and the state variable again. Do not resume the older 155-ply physical checkpoint until its stopped `h5h4` carry has been physically reconciled; see the [roadmap evidence](ROADMAP.md#physical-progress-recorded-2026-10-05).
 
 Promotion uses the same physical pawn as a stand-in for the selected legal queen, rook, bishop, or knight. Later moves still carry that pawn; its capture parks it as a pawn. No replacement piece is taken from parking.
 
@@ -107,7 +110,7 @@ serial_port=/dev/ttyACM0  # replace with the detected WSL device
 cd ../computer
 ```
 
-Use `pio` instead of `.venv/bin/pio` if PlatformIO is already installed in WSL. The loaded carry profile is 50 mm/s at 400 mm/s²; magnet-on horizontal grid segments beside occupied squares use 30 mm/s at 250 mm/s². Unloaded travel and homing have separate profiles. The user reports that the slower profiles work in a physical test; record repeatability, piece slip, neighboring displacement, and faults during longer runs.
+Use `pio` instead of `.venv/bin/pio` if PlatformIO is already installed in WSL. The loaded carry profile is 50 mm/s at 400 mm/s²; magnet-on horizontal grid segments beside occupied squares use 30 mm/s at 250 mm/s². Unloaded travel and homing have separate profiles. Longer physical runs work overall, but crowded horizontal lanes can disturb off-center pieces. The host now favors detours; record contact, displacement, slip, and delivery during a loaded trial.
 
 A short diagonal and reset trial clears the bishop's path to h6:
 

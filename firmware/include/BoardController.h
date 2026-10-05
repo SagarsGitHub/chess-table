@@ -41,6 +41,8 @@ public:
 
 private:
     enum class Operation : uint8_t { Idle, Carry };
+    // Each route point has one moving stage and a timed magnet/dwell stage.
+    // TravelRelease precedes the initial fast trip to the source.
     enum class Stage : uint8_t { TravelRelease, Moving, Dwell, Pickup, Release };
     void waitForRelease();
     bool preflight();
