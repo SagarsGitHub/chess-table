@@ -1,8 +1,12 @@
 # Stage 4 physical test game
 
-This runbook is for the first supervised game-orchestration smoke test. It has
-not been run on the physical table. A successful five-ply line is progress
-toward stage 4, not acceptance of a complete game or all 32 parking slots.
+This runbook covers the smoke line and continuation toward a
+complete physical game against Stockfish. The saved 2026-10-05 physical run
+reached 16 committed plies and four occupied parking slots. A complete game,
+promotion, all 32 parking slots, and fault recovery still need physical
+acceptance evidence. This table has no piece sensors: the human enters UCI
+moves, successful `DONE CARRY` responses advance expected occupancy during
+ordinary play, and uncertain outcomes require physical reconciliation.
 
 ## Board and clearance gate
 
@@ -25,11 +29,18 @@ square centers, not piece clearance. The outer parking lanes are clamped to
 the 2 mm inset and run close to occupied edge squares. The user measured
 18 mm moving and 18 mm standing footprints. The commands below use these
 values with a **provisional 0 mm margin**; centering, wobble, and path error
-still need to be measured and allowed for. The runner uses the live `GEOM`
-values for physical play and rejects a move if any transfer has no route
-within the Uno's 12-waypoint limit. Its circular-clearance model can also
-reject an empirically viable tight route; the runner currently fails closed
-instead of forcing motion. Record that case for route or hardware refinement.
+still need to be measured and allowed for. The runner uses live `GEOM` for
+physical play. It first searches for a route with the configured circular
+piece clearance. If that fails and `allow_tight_routes` is enabled, it may
+use a bounded route that avoids occupied centers but can pass closer than
+the measured diameters permit. The CLI labels this `CLEARANCE OVERRIDE` in
+its output. Normal play continues without a route prompt; `--supervised`
+adds deliberate prompts for a test session. Watch nearby pieces and keep the
+independent power cutoff ready. The override does not relax travel bounds,
+firmware limit handling, or the Uno's 12-waypoint limit. Use
+`--strict-clearance` to disable fallback for a session; `--allow-tight-routes`
+enables it even if the config disables it. An override is a configured
+physical tradeoff, not measured clearance certification.
 
 The magnet-release reset is still tracked as [issue #1](https://github.com/SagarsGitHub/chess-table/issues/1).
 Do not rely on this game run to certify the unresolved electrical behavior.
@@ -55,10 +66,23 @@ the initial `MAP` value `FFFF00000000FFFF00000000`. The runner preflights the
 | White 3 | `e5d6` | En passant: park the black pawn from d5 first; then carry the white pawn from e5 to d6. |
 
 With the reported geometry, 18/18 mm footprints, and provisional 0 mm margin,
-the current planner chose P19 for the captured pawn. This is an illustrative
-software result, not a fixed slot assignment or physical clearance guarantee.
-The runner must show the planned route and chosen slot for operator review.
-If preflight fails, stop that ply before either piece moves.
+the earlier planner chose P19 for the captured pawn. This is an illustrative
+result, not a fixed slot assignment or physical clearance guarantee. The
+runner prints the planned route and chosen slot. If preflight fails, stop
+that ply before either piece moves.
+
+The ignored `computer/runs/physical-smoke-20261005-013125.json` checkpoint
+records 16 committed plies through `h7h5`, no pending action, and parked
+pieces in P19–P22. Its paired serial transcript records 20 `CARRY` requests
+and 20 matching `DONE CARRY` responses without a controller `ERR`. It also
+records four `!BOOT` announcements across connection sessions, so it does not
+prove a reset-free loaded run. The user reports a later knight route rejected
+by the clearance model; the failed move's exact UCI is not verified in this
+checkpoint. From a copy of that checkpoint, strict preflight rejected all
+four legal white knight moves, while the fallback found bounded routes. A
+simulated `g1f3` continuation committed as ply 17 and displayed `CLEARANCE
+OVERRIDE`; the saved physical checkpoint was not changed. These records do
+not establish loaded knight-route or full-game acceptance.
 
 ## Promotion rule for a longer game
 
@@ -68,9 +92,10 @@ leaves that same physical pawn there. The game position and Stockfish treat it
 as the selected queen, rook, bishop, or knight. On later legal moves the table
 carries the pawn stand-in; if the promoted piece is captured, it parks that
 physical pawn. No replacement piece is taken from parking, and the operator
-does not exchange pieces by hand. After promotion and each later action,
-confirm both the legal piece shown in the game state and the actual pawn's
-location. On resume, reconcile the pawn stand-in with its recorded legal type.
+does not exchange pieces by hand. For promotion acceptance, inspect the legal
+piece shown in the game state and the actual pawn's location after promotion,
+a later move, and capture. On resume after an uncertain outcome, reconcile
+the pawn stand-in with its recorded legal type.
 
 ## Run from the Coding checkout in WSL
 
@@ -98,9 +123,9 @@ sim_state="runs/smoke-$(date +%Y%m%d-%H%M%S).json"
 
 ### Connect the Uno to WSL for physical play
 
-At the 2026-10-05 setup check, the Uno appeared as `COM3` in Windows but was
-not attached to WSL. WSL 2 requires USB passthrough; a Windows COM number is
-not a WSL serial path.
+The 2026-10-05 physical run confirms that this checkout can operate the Uno
+through WSL. Reattach the device after a reboot or USB disconnect. WSL 2 uses
+USB passthrough; a Windows COM number is not a WSL serial path.
 Follow [Microsoft's USB connection guide](https://learn.microsoft.com/en-us/windows/wsl/connect-usb)
 to install `usbipd-win` if needed. Close Arduino Serial Monitor first. In an
 **administrator PowerShell**, list devices, identify the Uno's bus ID, and
@@ -138,7 +163,9 @@ ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null
 After verifying the standard starting position and empty parking, set the
 detected port below and start a fresh physical checkpoint. The runner performs
 `HOME` or `REF`, reads live `GEOM`, and sends `MAP` itself. Add `--home` only if
-you want to force a full calibration.
+you want to force a full calibration. Add `--supervised` if you deliberately
+want move, route, and placement prompts during a hardware test; normal play
+advances after matched `DONE CARRY` responses.
 
 ```bash
 serial_port=/dev/ttyACM0  # replace with the port reported on your WSL machine
@@ -146,36 +173,51 @@ physical_state="runs/physical-smoke-$(date +%Y%m%d-%H%M%S).json"
 .venv/bin/python -m chess_table_host.play --new --state "$physical_state" --port "$serial_port" --moves e2e4 a7a6 e4e5 d7d5 e5d6
 ```
 
-To continue that checkpoint against Stockfish, keep the same state file and
+To continue a checkpoint against Stockfish, keep the same state file and
 port. The existing Windows Stockfish executable was verified from this WSL
 installation; pass its WSL path because WSL's `~/Documents` is different from
 Windows Documents. White remains the human side. Enter the intended White
 UCI move without moving the piece by hand; the table carries both sides.
+The checked-in config enables `allow_tight_routes`. The runner first tries
+measured clearance and only falls back when needed. It prints `CLEARANCE
+OVERRIDE` when a transfer uses that fallback. Keep sight of the table during
+motion and stop if a piece shifts. To refuse every tight route for a session, add
+`--strict-clearance`; to enable them with a stricter custom config, add
+`--allow-tight-routes`.
 
 ```bash
 .venv/bin/python -m chess_table_host.play --resume --state "$physical_state" --port "$serial_port" --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe --human white
 ```
 
 If you open a new WSL shell, set `physical_state` and `serial_port` again to
-the saved file and attached port before using `--resume`.
+the saved file and attached port before using `--resume`. To continue the
+recorded 16-ply test, use
+`physical_state=runs/physical-smoke-20261005-013125.json` only if the actual
+board and all parked pieces still match that checkpoint. Otherwise restore a
+standard starting position and start a new game with a fresh `--new` state
+filename. Do not use `--resume` to replay completed plies.
 
-The runner restricts Stockfish to legal moves that pass route preflight. If
-none pass the current clearance model, it pauses the game. Check the saved
-state and actual board before continuing; do not bypass the route check for a
-loaded move.
+The runner restricts Stockfish to legal moves that pass route preflight under
+the selected clearance setting. If none pass, it pauses the game. In normal
+mode, it sends the transfers and advances expected occupancy after matched
+`DONE CARRY` responses without further prompts. A completed command does not
+measure where the physical piece ended up. If a piece shifts or the board
+differs from the checkpoint, stop and reconcile before continuing.
 
 The physical runner writes a serial transcript beside the chosen state file
 with the suffix `.serial.jsonl`. It records request frames, `ACK`/`DONE`/`ERR`,
 and `!BOOT`; `--serial-log path` changes its location.
 
-For each transfer, require `ACK` and terminal `DONE CARRY`, then have the
-operator confirm pickup, final placement, and that nearby pieces did not
-shift. `DONE CARRY` reports commanded motion and relay timing; it cannot sense
-the pieces. Update the host's physical occupancy only after that transfer is
-confirmed. After the victim is parked, plan and execute the attacker against
-the updated occupancy. At the end, confirm a white pawn on d6, e2/e4/e5
-empty, d5 empty, the black d-pawn in the selected parking slot, the black
-a-pawn on a6, and all other pieces unchanged.
+For each transfer, the host requires `ACK` and terminal `DONE CARRY`, then
+advances its expected physical occupancy. `DONE CARRY` reports commanded
+motion and relay timing; it cannot sense the pieces. After the victim is
+parked, the host routes and executes the attacker against the updated
+occupancy. For acceptance of the five-ply line, inspect a white pawn on d6,
+e2/e4/e5 empty, d5 empty, the black d-pawn in the selected parking slot, the
+black a-pawn on a6, and all other pieces unchanged. During a longer game,
+watch the board and stop if a carry goes wrong, particularly on a tight route.
+Manual UCI entry remains required for human moves; there is no piece sensing
+to infer a move or detect a missed pickup.
 
 ## Interruption and recovery
 
@@ -189,7 +231,7 @@ and sends a truthful `MAP` before the next `CARRY`. For a fault between victim
 parking and attacker motion, the victim remains parked in the physical
 inventory; the chess move is still unfinished. On resume, choose SOURCE or
 DESTINATION only after restoring or verifying that action's result. A move
-paused between confirmed actions can continue from its checkpoint or be
+paused between completed actions can continue from its checkpoint or be
 aborted after manually restoring the entire pre-move board and parking
 inventory.
 
@@ -197,7 +239,7 @@ inventory.
 
 Save the firmware/host commit, complete serial log (including resets), live
 `GEOM`, measured footprints and margin, FEN and parking inventory before and
-after each ply, chosen routes/slots, operator confirmations, and any observed
+after each ply, chosen routes/slots, any supervision notes, and any observed
 reset or displacement. For a promotion, record the chosen legal type and the
 physical pawn's location through later movement or capture. Stage 4 acceptance
 still requires a complete local game, tested special moves, and mid-capture

@@ -2,7 +2,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,6 +21,147 @@ class PlayConfigurationTests(unittest.TestCase):
         self.assertEqual(config["stockfish_path"], "~/Documents/stockfish")
         self.assertEqual(config["moving_diameter_mm"], 18)
         self.assertEqual(config["standing_diameter_mm"], 18)
+        self.assertIs(config["allow_tight_routes"], True)
+
+    def test_physical_script_advances_after_controller_completion_without_routine_prompts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "game.json"
+            controller = _geometry_from_file(
+                DEFAULT_CONFIG.parent / "fixtures" / "board_geometry_2026-10-05.json"
+            )
+            output = io.StringIO()
+            with (
+                patch("chess_table_host.play._connect_physical", return_value=(SimulatedLink(), controller)),
+                patch("builtins.input", side_effect=AssertionError("unexpected physical-play prompt")),
+                redirect_stdout(output),
+            ):
+                result = main(["--new", "--state", str(state), "--moves", "g1f3"])
+            self.assertEqual(result, 0)
+            self.assertIn("CLEARANCE OVERRIDE", output.getvalue())
+            self.assertIn("Committed g1f3", output.getvalue())
+            saved = JsonGameStore(state).load()
+            self.assertEqual(saved.moves, ["g1f3"])
+            self.assertEqual(
+                [event["confirmation_source"] for event in saved.events
+                 if event["event"] == "action_confirmed"],
+                ["controller_done"],
+            )
+
+    def test_clean_physical_resume_continues_without_routine_prompts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "game.json"
+            controller = _geometry_from_file(
+                DEFAULT_CONFIG.parent / "fixtures" / "board_geometry_2026-10-05.json"
+            )
+            with (
+                patch("chess_table_host.play._connect_physical", return_value=(SimulatedLink(), controller)),
+                patch("builtins.input", side_effect=AssertionError("unexpected physical-play prompt")),
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(main([
+                    "--new", "--state", str(state), "--moves", "e2e4",
+                ]), 0)
+                self.assertEqual(main([
+                    "--resume", "--state", str(state), "--moves", "e2e4", "a7a6",
+                ]), 0)
+            self.assertEqual(JsonGameStore(state).load().moves, ["e2e4", "a7a6"])
+
+    def test_strict_clearance_cli_override_rejects_crowded_knight(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "game.json"
+            controller = _geometry_from_file(
+                DEFAULT_CONFIG.parent / "fixtures" / "board_geometry_2026-10-05.json"
+            )
+            output = io.StringIO()
+            error = io.StringIO()
+            with (
+                patch("chess_table_host.play._connect_physical", return_value=(SimulatedLink(), controller)),
+                patch("builtins.input", side_effect=AssertionError("unexpected physical-play prompt")),
+                redirect_stdout(output),
+                redirect_stderr(error),
+            ):
+                result = main([
+                    "--new", "--state", str(state), "--moves", "g1f3", "--strict-clearance",
+                ])
+            self.assertEqual(result, 1)
+            self.assertIn("Tight-route fallback: disabled", output.getvalue())
+            self.assertIn("move g1f3 cannot start", error.getvalue())
+            saved = JsonGameStore(state).load()
+            self.assertEqual(saved.moves, [])
+            self.assertIsNone(saved.pending)
+
+    def test_supervised_physical_mode_keeps_explicit_approvals(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "game.json"
+            controller = _geometry_from_file(
+                DEFAULT_CONFIG.parent / "fixtures" / "board_geometry_2026-10-05.json"
+            )
+            prompts: list[str] = []
+
+            def answer(prompt: str) -> str:
+                prompts.append(prompt)
+                return "y"
+
+            with (
+                patch("chess_table_host.play._connect_physical", return_value=(SimulatedLink(), controller)),
+                patch("builtins.input", side_effect=answer),
+                redirect_stdout(io.StringIO()),
+            ):
+                result = main([
+                    "--new", "--state", str(state), "--moves", "e2e4", "--supervised",
+                ])
+            self.assertEqual(result, 0)
+            self.assertEqual(len(prompts), 4)
+            self.assertIn("entire physical board", prompts[0])
+            self.assertIn("Start this physical move", prompts[1])
+            self.assertIn("Start this transfer", prompts[2])
+            self.assertIn("Confirm physical action", prompts[3])
+            saved = JsonGameStore(state).load()
+            self.assertEqual(saved.moves, ["e2e4"])
+            self.assertEqual(
+                [event["confirmation_source"] for event in saved.events
+                 if event["event"] == "action_confirmed"],
+                ["operator"],
+            )
+
+    def test_automatic_mode_still_prompts_for_uncertain_carry_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "game.json"
+            store = JsonGameStore(state)
+            runner = GameRunner(GameState.new(), store)
+            controller = _geometry_from_file(
+                DEFAULT_CONFIG.parent / "fixtures" / "board_geometry_2026-10-05.json"
+            )
+            geometry = _route_geometry(controller, 18, 18, 0)
+            runner.prepare_move("e2e4", geometry)
+
+            class DisconnectingLink(SimulatedLink):
+                def carry(self, source_id: str, destination_id: str, point_chars: str):
+                    raise OSError("serial disconnect during CARRY")
+
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaises(OSError):
+                    runner.execute_pending(DisconnectingLink(), geometry, lambda _action: True)
+            self.assertEqual(store.load().pending.phase, "in_flight")
+            prompts: list[str] = []
+            answers = iter(("source", "y", "y"))
+
+            def answer(prompt: str) -> str:
+                prompts.append(prompt)
+                return next(answers)
+
+            with (
+                patch("chess_table_host.play._connect_physical", return_value=(SimulatedLink(), controller)),
+                patch("builtins.input", side_effect=answer),
+                redirect_stdout(io.StringIO()),
+            ):
+                result = main(["--resume", "--state", str(state), "--moves", "e2e4"])
+            self.assertEqual(result, 0)
+            self.assertEqual(len(prompts), 3)
+            self.assertIn("SOURCE, DESTINATION, or ABORT", prompts[0])
+            self.assertIn("inspect", prompts[1])
+            self.assertIn("entire physical board", prompts[2])
+            self.assertEqual(store.load().moves, ["e2e4"])
 
     def test_explicit_linux_engine_folder_resolves_executable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

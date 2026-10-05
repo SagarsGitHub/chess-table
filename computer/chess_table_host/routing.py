@@ -38,7 +38,7 @@ class RouteError(ValueError):
 
 
 class NoRouteError(RouteError):
-    """No route meets the supplied center-to-center clearance."""
+    """No route meets the geometric constraints for this transfer."""
 
 
 class RouteTooLongError(RouteError):
@@ -158,6 +158,7 @@ class CarryRoute:
     transfer: Transfer
     points: tuple[HalfSquarePoint, ...]
     geometry_applied: bool = False
+    clearance_ignored: bool = False
 
     def __post_init__(self) -> None:
         if not 2 <= len(self.points) <= MAX_ROUTE_POINTS:
@@ -248,6 +249,7 @@ def plan_transfer_route(
     occupied_parking_slots: Iterable[ParkingSlot],
     geometry: RouteGeometry | None = None,
     max_waypoints: int | None = None,
+    ignore_piece_clearance: bool = False,
 ) -> CarryRoute:
     """Route a single transfer against the occupancy *before* that transfer.
 
@@ -261,12 +263,16 @@ def plan_transfer_route(
     obstacles.
     Without ``geometry``, only direct center crossings are excluded. Such a
     route is a nominal path and has no piece-clearance check.
+    ``ignore_piece_clearance`` skips only the circular diameter/margin test.
+    Measured pulse bounds, occupied centers, and waypoint capacity still apply.
     """
 
     if not isinstance(transfer, Transfer):
         raise TypeError("transfer must be a Transfer")
     if geometry is not None and not isinstance(geometry, RouteGeometry):
         raise TypeError("geometry must be a RouteGeometry or None")
+    if type(ignore_piece_clearance) is not bool:
+        raise TypeError("ignore_piece_clearance must be a bool")
     if max_waypoints is not None and (type(max_waypoints) is not int or not 2 <= max_waypoints <= MAX_ROUTE_POINTS):
         raise ValueError(f"max_waypoints must be 2..{MAX_ROUTE_POINTS}")
     source, destination = transfer.source, transfer.destination
@@ -312,7 +318,14 @@ def plan_transfer_route(
         obstacle_positions = tuple(metric(point) for point in obstacles)
     except RouteError as exc:
         raise NoRouteError("Source, destination or occupied piece lies outside measured bounds") from exc
-    required_squared = geometry.required_center_distance_mm ** 2 if geometry else None
+    required_squared = (
+        geometry.required_center_distance_mm ** 2
+        if geometry is not None and not ignore_piece_clearance else None
+    )
+    no_route_message = (
+        f"No route from {source!r} to {destination!r} "
+        + ("without crossing occupied centers" if ignore_piece_clearance else "at the specified clearance")
+    )
 
     def clear(a: HalfSquarePoint, b: HalfSquarePoint) -> bool:
         try:
@@ -391,9 +404,7 @@ def plan_transfer_route(
                     previous_state[next_state] = state
                     serial += 1
                     heappush(heap, (cost[0], cost[1], serial, next_state))
-        raise NoRouteError(
-            f"No route from {source!r} to {destination!r} at the specified clearance"
-        )
+        raise NoRouteError(no_route_message)
 
     queue = deque([source_point])
     previous: dict[HalfSquarePoint, HalfSquarePoint | None] = {source_point: None}
@@ -411,16 +422,18 @@ def plan_transfer_route(
                 compressed = fewest_waypoints()
                 if len(compressed) > max_waypoints:
                     raise RouteTooLongError(len(compressed), max_waypoints)
-            return CarryRoute(transfer, compressed, geometry_applied=geometry is not None)
+            return CarryRoute(
+                transfer, compressed,
+                geometry_applied=geometry is not None,
+                clearance_ignored=geometry is not None and ignore_piece_clearance,
+            )
 
         for next_point in neighbors(here):
             if next_point not in previous and clear(here, next_point):
                 previous[next_point] = here
                 queue.append(next_point)
 
-    raise NoRouteError(
-        f"No route from {source!r} to {destination!r} at the specified clearance"
-    )
+    raise NoRouteError(no_route_message)
 
 
 def find_reachable_parking_slot(
@@ -431,6 +444,7 @@ def find_reachable_parking_slot(
     occupied_squares: Iterable[BoardSquare],
     geometry: RouteGeometry | None = None,
     max_waypoints: int | None = None,
+    ignore_piece_clearance: bool = False,
 ) -> ParkingSlot:
     """Choose the first vacant slot with a route from ``source``.
 
@@ -457,6 +471,7 @@ def find_reachable_parking_slot(
                 occupied_parking_slots=parked,
                 geometry=geometry,
                 max_waypoints=max_waypoints,
+                ignore_piece_clearance=ignore_piece_clearance,
             )
         except NoRouteError:
             continue
@@ -466,7 +481,10 @@ def find_reachable_parking_slot(
         return slot
     if too_long is not None:
         raise too_long
-    raise NoRouteError("No empty parking slot is reachable at the specified clearance")
+    raise NoRouteError(
+        "No empty parking slot is reachable "
+        + ("without crossing occupied centers" if ignore_piece_clearance else "at the specified clearance")
+    )
 
 
 class ReachableParkingSlotSelector:
@@ -484,12 +502,16 @@ class ReachableParkingSlotSelector:
         *,
         geometry: RouteGeometry | None = None,
         max_waypoints: int | None = None,
+        ignore_piece_clearance: bool = False,
     ) -> None:
         self.current_squares = set(occupied_squares)
         if any(not isinstance(square, BoardSquare) for square in self.current_squares):
             raise RouteError("occupied_squares must contain BoardSquare values")
         self.geometry = geometry
         self.max_waypoints = max_waypoints
+        if type(ignore_piece_clearance) is not bool:
+            raise TypeError("ignore_piece_clearance must be a bool")
+        self.ignore_piece_clearance = ignore_piece_clearance
 
     def __call__(self, source: BoardSquare, piece: str, slots: tuple[str | None, ...]) -> ParkingSlot:
         slot = find_reachable_parking_slot(
@@ -497,6 +519,7 @@ class ReachableParkingSlotSelector:
             occupied_squares=self.current_squares,
             geometry=self.geometry,
             max_waypoints=self.max_waypoints,
+            ignore_piece_clearance=self.ignore_piece_clearance,
         )
         self.current_squares.remove(source)
         return slot

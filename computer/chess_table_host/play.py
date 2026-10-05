@@ -1,4 +1,4 @@
-"""Supervised local game runner for the chess table.
+"""Local game runner for the chess table.
 
 Run ``python -m chess_table_host.play --help`` for physical, simulated, and
 serial-port discovery options. Simulation checks host orchestration only; it
@@ -53,6 +53,9 @@ def _load_config(path: Path) -> dict[str, object]:
     if (config["moving_diameter_mm"] <= 0 or config["standing_diameter_mm"] <= 0 or
             config["clearance_margin_mm"] < 0):
         raise GameStateError("diameters must be positive and margin cannot be negative")
+    if type(config.get("allow_tight_routes", False)) is not bool:
+        raise GameStateError("allow_tight_routes must be a boolean")
+    config["allow_tight_routes"] = config.get("allow_tight_routes", False)
     return config
 
 
@@ -168,20 +171,24 @@ def _show_physical_state(state: GameState) -> None:
             print("Last CARRY arguments:", " ".join(pending.active_route))
 
 
-def _reconcile_at_start(runner: GameRunner) -> None:
+def _reconcile_at_start(runner: GameRunner, *, automatic: bool = False) -> None:
     pending = runner.state.pending
+    uncertain_at_start = pending is not None and pending.phase != "ready"
     if pending:
         _show_physical_state(runner.state)
     if pending and pending.phase == "ready":
-        print("This move has confirmed actions remaining. You may continue from the checkpoint")
-        print("or manually restore the entire committed pre-move position and abort it.")
-        answer = input("Press Enter to continue, or type ABORT after restoring: ").strip().lower()
-        if answer == "abort":
-            if not _yes("Did you restore every board square and parking slot to the pre-move position?"):
-                raise ReconciliationRequired("pre-move position was not confirmed")
-            runner.abort_pending_after_restore()
-        elif answer:
-            raise ReconciliationRequired("no valid recovery choice was selected")
+        if automatic:
+            print("Continuing the checkpointed move from its last completed action.")
+        else:
+            print("This move has confirmed actions remaining. You may continue from the checkpoint")
+            print("or manually restore the entire committed pre-move position and abort it.")
+            answer = input("Press Enter to continue, or type ABORT after restoring: ").strip().lower()
+            if answer == "abort":
+                if not _yes("Did you restore every board square and parking slot to the pre-move position?"):
+                    raise ReconciliationRequired("pre-move position was not confirmed")
+                runner.abort_pending_after_restore()
+            elif answer:
+                raise ReconciliationRequired("no valid recovery choice was selected")
     elif pending:
         print("Inspect the last action and every affected square and parking slot.")
         print("SOURCE: restore its piece to the action source. DESTINATION: confirm it arrived.")
@@ -196,7 +203,9 @@ def _reconcile_at_start(runner: GameRunner) -> None:
         else:
             runner.resolve_uncertain_action(answer)
     _show_physical_state(runner.state)
-    if not _yes("Does the entire physical board and parking inventory match this checkpoint?"):
+    if (not automatic or uncertain_at_start) and not _yes(
+        "Does the entire physical board and parking inventory match this checkpoint?"
+    ):
         raise ReconciliationRequired("physical board does not match the saved checkpoint")
 
 
@@ -346,8 +355,7 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                 elif engine is not None and board.turn != (args.human == "white"):
                     feasible = _feasible_engine_moves(runner, geometry)
                     if not feasible:
-                        print("No legal engine move passes measured route preflight; game paused.")
-                        break
+                        raise GameStateError("no legal engine move passes route preflight")
                     result = engine.play(
                         board, chess.engine.Limit(time=args.engine_time), root_moves=feasible,
                     )
@@ -364,21 +372,28 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                         break
                 try:
                     _print_plan(runner, uci, geometry)
-                    if not args.simulate and not _yes("Start this physical move?"):
+                    if getattr(args, "supervised", False) and not args.simulate and not _yes(
+                        "Start this physical move?"
+                    ):
                         print("Move left unstarted.")
                         break
                     runner.prepare_move(uci, geometry)
                 except (GameStateError, RouteError, ValueError) as exc:
-                    print(f"Move cannot start: {exc}")
                     if script_index < len(scripted) or engine is not None:
-                        break
+                        raise GameStateError(f"move {uci} cannot start: {exc}") from exc
+                    print(f"Move cannot start: {exc}")
                     continue
 
             def approve_route(action, route, wire) -> bool:
                 points = " -> ".join(f"({point.x},{point.y})" for point in route.points)
                 print("Route for", _describe_action(action), ":", points)
                 print("CARRY arguments:", " ".join(wire))
-                return args.simulate or _yes("Start this transfer?")
+                if route.clearance_ignored:
+                    print("CLEARANCE OVERRIDE: circular piece-footprint clearance was bypassed."
+                          " Motion will continue on the occupied-center-safe route.")
+                return args.simulate or not getattr(args, "supervised", False) or _yes(
+                    "Start this transfer?"
+                )
 
             def confirm(action: Action) -> bool:
                 if args.simulate:
@@ -386,10 +401,20 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                     return True
                 if isinstance(action, ManualReplacement):
                     raise GameStateError("manual promotion exchange is not allowed by this board design")
-                return _yes(f"Confirm physical action: {_describe_action(action)}?")
+                if getattr(args, "supervised", False):
+                    return _yes(f"Confirm physical action: {_describe_action(action)}?")
+                print("Controller DONE; advancing", _describe_action(action))
+                return True
 
             try:
-                runner.execute_pending(link, geometry, confirm, approve_route)
+                runner.execute_pending(
+                    link, geometry, confirm, approve_route,
+                    confirmation_source=(
+                        "simulation" if args.simulate else
+                        "operator" if getattr(args, "supervised", False) else
+                        "controller_done"
+                    ),
+                )
             except MoveDeferred as exc:
                 print(exc)
                 print("Move checkpoint saved; resume when ready.")
@@ -434,7 +459,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--moving-diameter", type=float, help="measured maximum moving footprint in mm")
     parser.add_argument("--standing-diameter", type=float, help="measured maximum standing footprint in mm")
     parser.add_argument("--margin", type=float, help="override configured clearance in mm")
+    clearance = parser.add_mutually_exclusive_group()
+    clearance.add_argument("--allow-tight-routes", dest="allow_tight_routes", action="store_true",
+                           help="permit bounded routes that fail piece-footprint clearance")
+    clearance.add_argument("--strict-clearance", dest="allow_tight_routes", action="store_false",
+                           help="reject routes that fail piece-footprint clearance")
+    parser.set_defaults(allow_tight_routes=None)
     parser.add_argument("--home", action="store_true", help="full HOME even if saved geometry exists")
+    parser.add_argument("--supervised", action="store_true",
+                        help="ask before moves/routes and after CARRY completion")
     parser.add_argument("--moves", nargs="+", help="scripted UCI moves, in order")
     parser.add_argument("--engine", help="override ~/Documents/stockfish with a Stockfish file or folder")
     parser.add_argument("--manual-both", action="store_true", help="enter UCI moves for both sides")
@@ -454,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
         args.standing_diameter = config["standing_diameter_mm"]
     if args.margin is None:
         args.margin = config["clearance_margin_mm"]
+    if args.allow_tight_routes is None:
+        args.allow_tight_routes = config["allow_tight_routes"]
     if args.list_ports:
         return _list_ports(config["serial_port"])
     if (args.state is None or (not args.new and not args.resume) or
@@ -478,11 +513,11 @@ def main(argv: list[str] | None = None) -> int:
             state = store.load()
         except (GameStateError, OSError, ValueError) as exc:
             parser.error(f"could not load state file {args.state}: {exc}")
-    runner = GameRunner(state, store)
+    runner = GameRunner(state, store, allow_tight_routes=args.allow_tight_routes)
     link = None
     try:
         if not args.simulate:
-            _reconcile_at_start(runner)
+            _reconcile_at_start(runner, automatic=not args.supervised)
             _validate_script(runner, args.moves or [])
             serial_log = args.serial_log or args.state.with_name(args.state.stem + ".serial.jsonl")
             link, controller = _connect_physical(
@@ -497,6 +532,9 @@ def main(argv: list[str] | None = None) -> int:
             controller, args.moving_diameter, args.standing_diameter, args.margin
         )
         print("Required center distance:", geometry.required_center_distance_mm, "mm")
+        print("Tight-route fallback:", "enabled" if args.allow_tight_routes else "disabled")
+        if not args.simulate:
+            print("Physical advancement:", "supervised" if args.supervised else "automatic after DONE CARRY")
         _play_moves(args, runner, link, geometry)
         return 0
     except KeyboardInterrupt:

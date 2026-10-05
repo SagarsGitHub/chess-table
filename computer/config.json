@@ -3,5 +3,6 @@
   "stockfish_path": "~/Documents/stockfish",
   "moving_diameter_mm": 18.0,
   "standing_diameter_mm": 18.0,
-  "clearance_margin_mm": 0.0
+  "clearance_margin_mm": 0.0,
+  "allow_tight_routes": true
 }

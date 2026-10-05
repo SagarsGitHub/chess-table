@@ -82,39 +82,45 @@ both `ACK` and terminal `DONE`/`ERR`; it treats reset, timeout, STOP, and
 ambiguous motion faults as requiring physical reconciliation. See
 [`docs/PROTOCOL.md`](../docs/PROTOCOL.md) for exact frames.
 
-## Supervised game runner
+## Game runner
 
 `python -m chess_table_host.play` joins the legal-move planner, measured route
 planner, and serial link. It preflights every transfer in a move before starting
 the first one, chooses a reachable parking slot, and saves an atomic JSON
-checkpoint after each confirmed physical action. Captures keep a separate
+checkpoint after each completed physical action. Captures keep a separate
 physical position while the victim is parked and the attacker has not moved.
 Physical sessions save timestamped TX/RX serial frames beside the checkpoint
 as `<state-name>.serial.jsonl`; `--serial-log` changes that path.
 An interrupted action is never replayed automatically; on resume the operator
 must inspect the board and choose whether the piece is at the source or
-destination (or restore the entire pre-move position). It asks for confirmation
-after every `DONE CARRY`, because the controller cannot sense piece placement.
+destination (or restore the entire pre-move position). In ordinary play a
+matched `DONE CARRY` advances expected occupancy without a confirmation prompt.
+Use `--supervised` to request move, route, and placement prompts during a
+deliberate test. The controller cannot sense whether the piece was delivered.
 The checkpoint records the legal promoted type and the physical pawn stand-in
-separately. Operator review must follow the legal type for chess moves and
-verify that the pawn is the piece actually moved or parked.
+separately. For promotion acceptance and fault recovery, compare the legal
+type with the physical pawn that was moved or parked.
 
 The checked-in [`config.json`](config.json) defaults to serial port `COM3`,
 Stockfish in `~/Documents/stockfish`, 18 mm moving and standing diameters, and
-a 0 mm margin. Edit that file, pass another JSON file with `--config`, or
-override individual values with `--port`, `--engine`, `--moving-diameter`,
+a 0 mm margin. It enables `allow_tight_routes`: the runner tries measured
+piece clearance first, then permits a route closer to occupied pieces if it
+still avoids their centers, stays within measured travel, and fits 12 waypoints.
+The CLI marks these carries `CLEARANCE OVERRIDE`; `--strict-clearance` disables
+the fallback for one session. Edit the config, pass another JSON file with
+`--config`, or override individual values with `--port`, `--engine`, `--moving-diameter`,
 `--standing-diameter`, and `--margin`. Use
 `python -m chess_table_host.play --list-ports` to find a connected Uno. The
 runner reads fresh `GEOM` from the controller for physical play. The 0 mm
-margin is the current supervised test setting, not a measured path-error
-allowance. The circular
-clearance model may reject a tight route that works in practice; it reports
-the failure without sending a carry.
+margin is the current physical test setting, not a measured path-error
+allowance. The circular clearance model may reject a tight route that works
+in practice; the fallback
+can route that transfer without relaxing firmware limits or the command format.
 
 For Ubuntu WSL 2 in the Coding checkout, use `.venv/bin/python` and override
 the Windows defaults with the attached Linux serial port (`--port /dev/ttyACM0`
-or the port detected on your machine) and the WSL path to Stockfish (`--engine
-/mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe`).
+or the port detected on your machine) and the WSL path to Stockfish
+(`--engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe`).
 The [stage 4 runbook](../docs/STAGE4_TEST_GAME.md) has the verified setup and
 USB attachment steps. A completed scripted smoke checkpoint should be kept;
 use a new state filename for another `--new` run.
@@ -133,14 +139,14 @@ simulation, port discovery, physical smoke, and resume commands.
 
 ## Current limits
 
-- General route execution has software and compiled-Uno simulator coverage;
-  loaded physical carries and measured clearance are pending the electrical
-  reset investigation and hardware acceptance runs.
+- General route execution has software and compiled-Uno simulator coverage,
+  plus a reported 16-ply loaded physical run. The complete game, all parking
+  slots, and tight knight-route acceptance remain to be verified on the board.
 - Game checkpoints and source/destination recovery rely on an operator's
   inspection. There is no camera or piece sensor to reconcile automatically.
 - A promoted pawn looks like a pawn even though it moves under the selected
   promoted piece's rules. The operator must use the displayed legal game state
-  when entering and confirming moves; there is no piece sensor to distinguish
-  the stand-in by sight.
+  when entering moves or reconciling a fault; there is no piece sensor to
+  distinguish the stand-in by sight.
 - The planner covers standard chess, not Chess960 castling. It records piece
   type and color per slot, not the identity of identical pieces.

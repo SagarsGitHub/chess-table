@@ -1,8 +1,9 @@
 """Checkpointed physical execution of legal chess moves.
 
 The committed chess position changes only after every transfer in a move has
-been confirmed by an operator.  A separate physical snapshot represents the
-temporary position between the victim and attacker legs of a capture.
+been accepted following controller completion or operator confirmation. A
+separate physical snapshot represents the temporary position between the
+victim and attacker legs of a capture.
 """
 
 from __future__ import annotations
@@ -26,7 +27,10 @@ from .planner import (
     Transfer,
     plan_move,
 )
-from .routing import CarryRoute, ReachableParkingSlotSelector, RouteGeometry, plan_transfer_route
+from .routing import (
+    CarryRoute, NoRouteError, ReachableParkingSlotSelector, RouteGeometry,
+    RouteTooLongError, plan_transfer_route,
+)
 from .wire import encode_carry, encode_map
 
 
@@ -393,7 +397,7 @@ class GameState:
 
 
 class JsonGameStore:
-    """Atomic checkpoint file; every confirmed physical action is persisted."""
+    """Atomic checkpoint file; every accepted physical action is persisted."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -414,28 +418,59 @@ class JsonGameStore:
 
 
 class GameRunner:
-    def __init__(self, state: GameState, store: JsonGameStore):
+    def __init__(
+        self, state: GameState, store: JsonGameStore, *, allow_tight_routes: bool = False,
+    ):
         state.validate()
+        if type(allow_tight_routes) is not bool:
+            raise TypeError("allow_tight_routes must be a bool")
         self.state = state
         self.store = store
+        self.allow_tight_routes = allow_tight_routes
 
     def current_map(self) -> str:
         return _physical_map(self.state.physical_squares, self.state.physical_parking)
+
+    def _route_transfer(
+        self, action: Transfer, squares: dict[str, str], slots: list[str | None],
+        geometry: RouteGeometry,
+    ) -> CarryRoute:
+        options = {
+            "occupied_squares": _occupied_squares(squares),
+            "occupied_parking_slots": _occupied_slots(slots),
+            "geometry": geometry,
+            "max_waypoints": 12,
+        }
+        try:
+            return plan_transfer_route(action, **options)
+        except (NoRouteError, RouteTooLongError):
+            if not self.allow_tight_routes:
+                raise
+            return plan_transfer_route(action, ignore_piece_clearance=True, **options)
 
     def preflight_move(self, uci: str, geometry: RouteGeometry) -> MovePlan:
         """Check *all* legs before starting a multi-transfer move."""
         if self.state.pending is not None:
             raise ReconciliationRequired("finish or reconcile the pending move first")
         board = self.state.board()
-        selector = ReachableParkingSlotSelector(
-            _occupied_squares(self.state.physical_squares),
-            geometry=geometry, max_waypoints=12,
-        )
-        logical_plan = plan_move(
-            board, uci, self.state.committed_parking,
-            promotion_policy=PromotionPolicy.PAWN_STAND_IN,
-            slot_selector=selector,
-        )
+        def plan_with_selector(ignore_piece_clearance: bool) -> MovePlan:
+            selector = ReachableParkingSlotSelector(
+                _occupied_squares(self.state.physical_squares),
+                geometry=geometry, max_waypoints=12,
+                ignore_piece_clearance=ignore_piece_clearance,
+            )
+            return plan_move(
+                board, uci, self.state.committed_parking,
+                promotion_policy=PromotionPolicy.PAWN_STAND_IN,
+                slot_selector=selector,
+            )
+
+        try:
+            logical_plan = plan_with_selector(False)
+        except (NoRouteError, RouteTooLongError):
+            if not self.allow_tight_routes:
+                raise
+            logical_plan = plan_with_selector(True)
         squares = dict(self.state.physical_squares)
         slots = list(self.state.physical_parking)
         physical_actions: list[Action] = []
@@ -445,11 +480,7 @@ class GameRunner:
                 if physical_piece is None:
                     raise GameStateError(f"planned transfer source is physically empty: {action.source}")
                 action = replace(action, piece=physical_piece)
-                plan_transfer_route(
-                    action, occupied_squares=_occupied_squares(squares),
-                    occupied_parking_slots=_occupied_slots(slots),
-                    geometry=geometry, max_waypoints=12,
-                )
+                self._route_transfer(action, squares, slots, geometry)
             else:
                 raise GameStateError("game runner cannot require a spare promotion piece")
             _apply_action(squares, slots, action)
@@ -479,7 +510,10 @@ class GameRunner:
         self, link: CarryLink, geometry: RouteGeometry,
         confirm: Callable[[Action], bool],
         approve_route: Callable[[Transfer, CarryRoute, tuple[str, str, str]], bool] | None = None,
+        *, confirmation_source: str = "operator",
     ) -> None:
+        if confirmation_source not in {"operator", "controller_done", "simulation"}:
+            raise ValueError("invalid confirmation source")
         pending = self.state.pending
         if pending is None:
             raise GameStateError("no pending move")
@@ -488,11 +522,9 @@ class GameRunner:
         while pending.next_action < len(pending.actions):
             action = pending.actions[pending.next_action]
             if isinstance(action, Transfer):
-                route = plan_transfer_route(
-                    action,
-                    occupied_squares=_occupied_squares(self.state.physical_squares),
-                    occupied_parking_slots=_occupied_slots(self.state.physical_parking),
-                    geometry=geometry, max_waypoints=12,
+                route = self._route_transfer(
+                    action, self.state.physical_squares, self.state.physical_parking,
+                    geometry,
                 )
                 wire = encode_carry(route)
                 if approve_route is not None and not approve_route(action, route, wire):
@@ -503,6 +535,7 @@ class GameRunner:
                 self.state.events.append({
                     "event": "carry_started", "uci": pending.uci,
                     "action": pending.next_action, "wire": list(wire),
+                    "clearance_override": route.clearance_ignored,
                 })
                 self.store.save(self.state)
                 completion = link.carry(*wire)
@@ -526,6 +559,7 @@ class GameRunner:
             self.state.events.append({
                 "event": "action_confirmed", "uci": pending.uci,
                 "action": pending.next_action,
+                "confirmation_source": confirmation_source,
             })
             pending.next_action += 1
             pending.phase = "ready"

@@ -92,6 +92,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(nominal.points[0], HalfSquarePoint(9, 3))
         self.assertEqual(checked.points[-1], HalfSquarePoint(9, 7))
         self.assertTrue(checked.geometry_applied)
+        self.assertFalse(checked.clearance_ignored)
         # This threshold is deliberately too large for the starting array.
         with self.assertRaises(NoRouteError):
             plan_transfer_route(
@@ -100,6 +101,73 @@ class RoutingTests(unittest.TestCase):
                 occupied_parking_slots=(),
                 geometry=self._geometry(32, 32),
             )
+
+    def test_explicit_clearance_override_routes_crowded_move(self) -> None:
+        squares = tuple(BoardSquare(chess.square_name(square)) for square in chess.Board().piece_map())
+        transfer = Transfer("P", BoardSquare("e2"), BoardSquare("e4"), "move")
+        geometry = self._geometry(32, 32)
+        with self.assertRaises(NoRouteError):
+            plan_transfer_route(
+                transfer, occupied_squares=squares, occupied_parking_slots=(),
+                geometry=geometry,
+            )
+
+        route = plan_transfer_route(
+            transfer, occupied_squares=squares, occupied_parking_slots=(),
+            geometry=geometry, ignore_piece_clearance=True, max_waypoints=12,
+        )
+        self.assertEqual(route.points[0], self._point("e2"))
+        self.assertEqual(route.points[-1], self._point("e4"))
+        self.assertTrue(route.geometry_applied)
+        self.assertTrue(route.clearance_ignored)
+        self._assert_firmware_segments(route.points, {self._point(square.name) for square in squares})
+
+    def test_clearance_override_keeps_center_bounds_and_waypoint_checks(self) -> None:
+        source = BoardSquare("e4")
+        with self.assertRaises(NoRouteError):
+            plan_transfer_route(
+                Transfer("P", source, ParkingSlot(0), "park"),
+                occupied_squares=(source, BoardSquare("a1")),
+                occupied_parking_slots=(ParkingSlot(1), ParkingSlot(18)),
+                geometry=self._geometry(32, 32), ignore_piece_clearance=True,
+            )
+
+        transfer = Transfer("P", source, ParkingSlot(0), "park")
+        with self.assertRaises(RouteTooLongError):
+            plan_transfer_route(
+                transfer, occupied_squares=(source,), occupied_parking_slots=(),
+                geometry=self._geometry(32, 32), ignore_piece_clearance=True,
+                max_waypoints=2,
+            )
+
+        shifted_geometry = RouteGeometry(
+            31.25, 18, 18, x_travel_mm=260, y_travel_mm=260,
+            end_inset_mm=2, pulses_per_mm=1600 / 12,
+            board_origin_x_mm=100,
+        )
+        with self.assertRaisesRegex(NoRouteError, "outside measured bounds"):
+            plan_transfer_route(
+                Transfer("P", BoardSquare("h1"), BoardSquare("g1"), "move"),
+                occupied_squares=(BoardSquare("h1"),), occupied_parking_slots=(),
+                geometry=shifted_geometry, ignore_piece_clearance=True,
+            )
+
+    def test_parking_selector_propagates_clearance_override(self) -> None:
+        squares = tuple(BoardSquare(chess.square_name(square)) for square in chess.Board().piece_map())
+        geometry = self._geometry(32, 32)
+        with self.assertRaises(NoRouteError):
+            find_reachable_parking_slot(
+                BoardSquare("e2"), "P", (None,) * 32,
+                occupied_squares=squares, geometry=geometry, max_waypoints=12,
+            )
+
+        selector = ReachableParkingSlotSelector(
+            squares, geometry=geometry, max_waypoints=12,
+            ignore_piece_clearance=True,
+        )
+        slot = selector(BoardSquare("e2"), "P", (None,) * 32)
+        self.assertIsInstance(slot, ParkingSlot)
+        self.assertNotIn(BoardSquare("e2"), selector.current_squares)
 
     def test_occupied_parking_slot_forces_detour(self) -> None:
         route = plan_transfer_route(
@@ -229,6 +297,9 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             plan_transfer_route(transfer, occupied_squares=(source,),
                                 occupied_parking_slots=(), max_waypoints=1)
+        with self.assertRaises(TypeError):
+            plan_transfer_route(transfer, occupied_squares=(source,),
+                                occupied_parking_slots=(), ignore_piece_clearance=1)
 
     def test_waypoint_limit_reports_error_without_truncating(self) -> None:
         transfer = Transfer("P", BoardSquare("e4"), ParkingSlot(0), "capture")

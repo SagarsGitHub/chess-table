@@ -193,6 +193,42 @@ class GameRunnerTests(unittest.TestCase):
         self.assertEqual(self.runner.state.moves, ["e2e4"])
         self.assertEqual(self.runner.state.physical_squares["e4"], "P")
 
+    def test_crowded_knight_fallback_executes_with_bounded_route_and_records_override(self) -> None:
+        before = self.runner.state.to_json()
+        with self.assertRaises(NoRouteError):
+            self.runner.preflight_move("g1f3", GEOMETRY)
+        self.assertEqual(self.runner.state.to_json(), before)
+
+        runner = GameRunner(self.runner.state, self.store, allow_tight_routes=True)
+        plan = runner.prepare_move("g1f3", GEOMETRY)
+        self.assertEqual(plan.actions, (Transfer("N", BoardSquare("g1"), BoardSquare("f3"), "move"),))
+        routed = []
+
+        def approve(_action, route, wire) -> bool:
+            routed.append(route)
+            self.assertTrue(route.geometry_applied)
+            self.assertTrue(route.clearance_ignored)
+            self.assertLessEqual(len(route.points), 12)
+            self.assertLessEqual(len(wire[2]), 24)
+            return True
+
+        link = FakeLink()
+        runner.execute_pending(
+            link, GEOMETRY, lambda _action: True, approve,
+            confirmation_source="controller_done",
+        )
+        self.assertEqual(len(routed), 1)
+        self.assertEqual(len(link.carries), 1)
+        self.assertEqual(runner.state.moves, ["g1f3"])
+        self.assertEqual(runner.state.physical_squares["f3"], "N")
+        self.assertNotIn("g1", runner.state.physical_squares)
+        self.assertIsNone(runner.state.pending)
+        started = [event for event in runner.state.events if event["event"] == "carry_started"]
+        confirmed = [event for event in runner.state.events if event["event"] == "action_confirmed"]
+        self.assertEqual([event["clearance_override"] for event in started], [True])
+        self.assertEqual([event["confirmation_source"] for event in confirmed], ["controller_done"])
+        self.assertEqual(self.store.load().to_json(), runner.state.to_json())
+
 
 if __name__ == "__main__":
     unittest.main()
