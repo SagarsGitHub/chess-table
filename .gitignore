@@ -210,3 +210,11 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+# Local firmware snapshots and scratch material used to assemble this repository.
+/tmp/
+
+# PlatformIO and local Python environments.
+**/.pio/
+**/.venv/
+*.hex
+*.elf

@@ -1,0 +1,9 @@
+# Serial protocol plan
+
+**Status:** design target; the imported firmware does not implement this protocol. Its current manual one-letter commands are documented in `firmware/README.md`. The reference Python client sends an incompatible unframed 9600-baud string, while the imported firmware's diagnostics use 115200 baud. Do not connect the legacy client to this firmware expecting game moves to work.
+
+Version 1 should use 115200 baud, newline-terminated ASCII frames, and one in-flight motion command. A request carries a monotonically increasing host command ID. Each accepted request gets `ACK <id>`, then exactly one `DONE <id> ...` or `ERR <id> <code>`. Unsolicited boot/fault/status messages use a distinct prefix. The host waits for a matching terminal response and records it before changing physical inventory. It treats serial disconnect, timeout, duplicate/unknown ID, and controller reboot during a carry as uncertain physical state.
+
+The initial command set should cover `HELLO` (protocol and capability version), `STATUS` (referenced/busy/fault/map state), `HOME`/`REFERENCE`, and `STOP`. Motion command syntax and maximum waypoint count must be finalized after measuring the Uno's free flash/RAM and verifying arbitrary routes. The host must check reported capabilities before dispatch and reject a logical move whose physical operations are not supported. Diagnostic one-letter commands may remain available in a separate manual mode during migration.
+
+Both sides should have a simulator-backed conformance suite for malformed frames, invalid coordinates or slots, busy commands, duplicate IDs, emergency stop, limit activation, reconnect, and boot during a carry. `DONE` confirms the commanded steps and release sequence, **not** that a piece was actually picked up or delivered. Without sensors, the UI must say when physical confirmation is needed.

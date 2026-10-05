@@ -1,0 +1,12 @@
+{
+  "name": "xychess-firmware-tests",
+  "private": true,
+  "scripts": {
+    "test": "node firmware-sim.cjs",
+    "test:faults": "node firmware-sim.cjs --faults",
+    "test:small-table": "node firmware-sim.cjs --small-table",
+    "test:full-board": "node firmware-sim.cjs --full-board",
+    "test:storage": "node firmware-sim.cjs --storage && node firmware-sim.cjs --restore && node firmware-sim.cjs --corrupt && node firmware-sim.cjs --interrupted-save && node firmware-sim.cjs --config-change"
+  },
+  "devDependencies": { "avr8js": "0.21.1" }
+}
