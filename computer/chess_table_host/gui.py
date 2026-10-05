@@ -157,6 +157,7 @@ class GameController:
         self._worker: threading.Thread | None = None
         self._interrupt_thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._reset_requested = threading.Event()
         self._moves: Queue[str] = Queue(maxsize=1)
         self._mode: str | None = None
         self._human = "white"
@@ -262,12 +263,15 @@ class GameController:
             status = self._status
             error = self._error
             human = self._human
+            reset_requested = self._reset_requested.is_set()
         # in_flight and awaiting_confirmation are normal checkpoints while the
         # worker still owns a carry. Only an ended worker leaves uncertainty.
         uncertain = not busy and action is not None and action["phase"] != "ready"
         game_over = board.is_game_over(claim_draw=True)
         if uncertain:
             phase = "reconciliation_required"
+        elif busy and reset_requested:
+            phase = "ending_game"
         elif busy and (state.pending is not None or state.reset is not None or activity == "moving"):
             phase = "moving"
         elif busy and activity == "engine_thinking":
@@ -306,17 +310,27 @@ class GameController:
             "can_move": can_move,
             "can_start": can_start,
             "can_reset": not cached and not busy and state.pending is None and not uncertain,
+            "can_end_and_reset": not cached and not uncertain and not reset_requested and (
+                (busy and mode is not None) or
+                (not busy and state.reset is None and
+                 (state.pending is None or state.pending.phase == "ready"))
+            ),
+            "reset_requested": reset_requested,
             "can_stop": busy,
             "simulated": self.simulate,
             "ply": len(state.moves),
             "checkpoint_cached": cached,
         }
 
-    def _start_worker(self, task, *, mode: str | None = None, human: str = "white") -> None:
+    def _start_worker(self, task, *, mode: str | None = None, human: str = "white",
+                      reset_after: bool = False) -> None:
         with self._guard:
             if self._worker is not None:
                 raise ApiError("a game or board reset is already running")
             self._stop.clear()
+            self._reset_requested.clear()
+            if reset_after:
+                self._reset_requested.set()
             self._moves = Queue(maxsize=1)
             self._mode = mode
             self._human = human
@@ -367,6 +381,7 @@ class GameController:
                 return
             already_stopping = self._stop.is_set()
             self._stop.set()
+            self._reset_requested.clear()
             self._status = "Pausing after the current transfer..."
             self._waiting = False
             if not already_stopping and not self.simulate and self.link is not None:
@@ -439,9 +454,38 @@ class GameController:
             raise ApiError("inspect and reconcile the uncertain reset transfer first")
         self._start_worker(self._reset_loop)
 
+    def end_game_and_reset(self) -> None:
+        """Finish the current chess move, then return every piece to setup.
+
+        This is a graceful game-ending request, not an emergency motor STOP.
+        A capture can have multiple transfers; resetting from its midpoint
+        would leave the checkpoint between legal chess positions.
+        """
+        with self._guard:
+            if self._worker is not None:
+                if self._mode is None:
+                    raise ApiError("board reset is already running")
+                if self._stop.is_set():
+                    raise ApiError("wait for the paused move to settle before resetting")
+                if self._reset_requested.is_set():
+                    return
+                self._reset_requested.set()
+                self._waiting = False
+                self._status = "Ending after the current chess move, then resetting the board..."
+                return
+        state = self._load_checkpoint()
+        if state.pending is not None:
+            if state.pending.phase != "ready":
+                raise ApiError("inspect and reconcile the uncertain move before resetting")
+            self._start_worker(self._game_loop, mode="manual_both", reset_after=True)
+        else:
+            self.reset_board()
+
     def _work(self, task) -> None:
+        completed = False
         try:
             task()
+            completed = True
         except MoveDeferred:
             self._set_activity("paused", "Paused at a completed transfer boundary; checkpoint saved.")
         except BaseException as exc:
@@ -463,8 +507,20 @@ class GameController:
                 self.geometry = None
         finally:
             with self._guard:
-                self._worker = None
                 self._waiting = False
+                if completed and task == self._game_loop and self._reset_requested.is_set():
+                    self._reset_requested.clear()
+                    self._mode = None
+                    self._activity = "starting"
+                    self._status = "Starting board reset..."
+                    next_worker = threading.Thread(
+                        target=self._work, args=(self._reset_loop,), daemon=True,
+                    )
+                    self._worker = next_worker
+                    next_worker.start()
+                else:
+                    self._reset_requested.clear()
+                    self._worker = None
 
     def _approve_route(self, *_args) -> bool:
         return not self._stop.is_set()
@@ -501,6 +557,8 @@ class GameController:
         try:
             while not self._stop.is_set():
                 pending = self.runner.state.pending
+                if self._reset_requested.is_set() and pending is None:
+                    break
                 if pending is not None:
                     if pending.phase != "ready":
                         raise ReconciliationRequired("inspect and reconcile the uncertain carry")
@@ -524,9 +582,11 @@ class GameController:
                             board, chess.engine.Limit(time=self.engine_time), root_moves=feasible,
                         )
                         uci = result.move.uci()
+                        if self._reset_requested.is_set():
+                            break
                     else:
                         self._set_activity("human_turn", "Enter a move; leave the physical pieces in place.")
-                        while not self._stop.is_set():
+                        while not self._stop.is_set() and not self._reset_requested.is_set():
                             try:
                                 uci = self._moves.get(timeout=0.2)
                                 break
@@ -534,7 +594,7 @@ class GameController:
                                 continue
                         else:
                             break
-                    if self._stop.is_set():
+                    if self._stop.is_set() or self._reset_requested.is_set():
                         break
                     self._set_activity("moving", f"Preflighting {uci}...")
                     self.runner.prepare_move(uci, geometry)
@@ -639,7 +699,7 @@ class GuiHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "local Host required"}, HTTPStatus.FORBIDDEN)
             return
         path = urlsplit(self.path).path
-        if path not in {"/api/start", "/api/move", "/api/stop", "/api/reconcile", "/api/reset-board"}:
+        if path not in {"/api/start", "/api/move", "/api/stop", "/api/reconcile", "/api/reset-board", "/api/end-game-reset"}:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         # JSON and same-origin requests prevent an unrelated website from
@@ -669,6 +729,8 @@ class GuiHandler(BaseHTTPRequestHandler):
                 controller.reconcile(body.get("outcome"), body.get("confirmed"))
             elif path == "/api/reset-board":
                 controller.reset_board()
+            elif path == "/api/end-game-reset":
+                controller.end_game_and_reset()
             self._send_json(controller.state(), HTTPStatus.ACCEPTED)
         except json.JSONDecodeError:
             self._send_json({"error": "invalid JSON"}, HTTPStatus.BAD_REQUEST)

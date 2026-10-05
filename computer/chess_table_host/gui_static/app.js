@@ -178,7 +178,7 @@ function phaseLabel(phase) {
     idle: "Ready", ready: "Ready", human_turn: "Your move", manual_turn: "Choose a move",
     engine_thinking: "Stockfish thinking", moving: "Board moving", game_over: "Game complete",
     stopped: "Stopped", reconciliation_required: "Inspection needed", resetting: "Resetting board",
-    starting: "Preparing board", fault: "Inspection needed", error: "Host error",
+    starting: "Preparing board", ending_game: "Ending game", fault: "Inspection needed", error: "Host error",
   };
   return labels[phase] || String(phase || "Ready").replaceAll("_", " ");
 }
@@ -213,6 +213,7 @@ function renderStatus() {
     ? "Inspect and reconcile before another move."
     : phase === "game_over" ? "Game complete. Reset the physical board to start another game."
       : canMove() ? (selected ? `Choose a destination for ${selected}.` : "Select a piece, then a highlighted destination.")
+      : phase === "ending_game" ? "Finishing the current move before returning pieces to setup."
       : phase === "engine_thinking" ? "Stockfish is choosing a move." : phase === "moving" || state.busy
         ? "The physical move is in progress." : "Moves are available when it is your turn.";
 }
@@ -313,12 +314,15 @@ function modeLabel(mode, human) {
 function renderSession() {
   const canStart = typeof state.can_start === "boolean" ? state.can_start : !state.mode;
   els["session-start"].hidden = !canStart;
-  els["session-live"].hidden = !state.mode && !(state.moves?.length || state.reset);
+  els["session-live"].hidden = !state.mode && !(state.moves?.length || state.pending || state.reset);
   els["start-button"].disabled = !online || commandInFlight || !canStart || state.busy || needsReconciliation();
   els["active-mode"].textContent = modeLabel(state.mode, state.human);
   els["move-count"].textContent = `${Array.isArray(state.moves) ? state.moves.length : 0} plies`;
-  els["reset-button"].textContent = state.reset ? "Continue board reset" : "Reset physical board";
-  els["reset-button"].disabled = !online || commandInFlight || !state.can_reset;
+  els["reset-button"].textContent = state.reset ? "Continue board reset"
+    : state.reset_requested ? "Finishing move, then resetting…"
+      : state.busy && state.mode ? "End game & reset board" : "Reset board for new game";
+  const canReset = state.reset ? state.can_reset : state.can_end_and_reset;
+  els["reset-button"].disabled = !online || commandInFlight || !canReset;
   const details = [];
   if (state.simulated) details.push("Simulation · no motors move");
   else details.push("Physical controller");
@@ -589,7 +593,9 @@ els["start-button"].addEventListener("click", () => {
   void command("/api/start", body);
 });
 els["stop-button"].addEventListener("click", () => { void command("/api/stop", {}); });
-els["reset-button"].addEventListener("click", () => { void command("/api/reset-board", {}); });
+els["reset-button"].addEventListener("click", () => {
+  void command(state?.reset ? "/api/reset-board" : "/api/end-game-reset", {});
+});
 els.inspected.addEventListener("change", renderRecovery);
 els["recovery-panel"].addEventListener("click", event => {
   const outcome = event.target.closest("button[data-outcome]")?.dataset.outcome;

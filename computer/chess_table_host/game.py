@@ -595,8 +595,10 @@ class GameRunner:
 
         Return misplaced home-rank pieces directly when their homes are clear;
         stage them only to break cycles or open a parking approach. Prioritize
-        bishops and knights, then other back-rank pieces, then pawns. Occupied
-        parking slots must retain a vacant adjacent edge square until retrieved.
+        bishops and knights, then other back-rank pieces, then pawns. If the
+        remaining parked pieces' homes form a cycle, stage one in the interior.
+        Occupied parking slots must retain a vacant adjacent edge square until
+        retrieved.
         """
         if self.state.pending is not None:
             raise ReconciliationRequired("finish or reconcile the pending move before resetting")
@@ -780,7 +782,47 @@ class GameRunner:
                 if chosen:
                     break
             if not chosen:
-                raise NoRouteError("cannot retrieve remaining parked pieces without trapping a slot")
+                # Parked pieces can form an ordering cycle even when every
+                # slot has an open approach. For example, returning a queen
+                # to d8 can close a bishop's only exit, returning that bishop
+                # to f8 can close a rook's exit, and returning the rook to a8
+                # can close the queen's. Bring one piece onto an interior
+                # square, then retry the newly unblocked home transfers.
+                # Keep the same route and remaining-exit checks as a direct
+                # return; no speculative CARRY is sent during preflight.
+                for index in choices:
+                    if index not in accessible:
+                        continue
+                    source = ParkingSlot(index)
+                    source_point = location_point(source)
+                    destinations = sorted(
+                        (name for name in staging if name not in squares),
+                        key=lambda name: (
+                            sum(name in _parking_approaches(ParkingSlot(other))
+                                for other, piece in enumerate(slots)
+                                if other != index and piece is not None),
+                            (location_point(BoardSquare(name)).x - source_point.x) ** 2 +
+                            (location_point(BoardSquare(name)).y - source_point.y) ** 2,
+                            name,
+                        ),
+                    )
+                    for name in destinations:
+                        destination = BoardSquare(name)
+                        trial_squares = dict(squares)
+                        trial_slots = list(slots)
+                        _apply_action(trial_squares, trial_slots,
+                                      Transfer(slots[index], source, destination, "reset_board"))
+                        if len(_accessible_parking(trial_slots, trial_squares)) != sum(
+                            piece is not None for piece in trial_slots
+                        ):
+                            continue
+                        if try_transfer(source, destination):
+                            chosen = True
+                            break
+                    if chosen:
+                        break
+                if not chosen:
+                    raise NoRouteError("cannot retrieve remaining parked pieces without trapping a slot")
 
         while squares != target:
             chosen = False

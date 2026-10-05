@@ -108,6 +108,25 @@ class ResetTests(unittest.TestCase):
         parked = [action for action in actions if isinstance(action.source, ParkingSlot)]
         self.assertEqual([action.piece for action in parked], ["B", "p"])
 
+    def test_full_game_reset_breaks_parked_home_cycle(self) -> None:
+        # A 126-ply game left 20 pieces parked. Three of their remaining
+        # return homes formed a cycle: q->d8 would trap b, b->f8 would trap r,
+        # and r->a8 would trap q. The complete reset must stage one piece and
+        # reach the standard setup without sending an unroutable transfer.
+        fixture = Path(__file__).with_name("fixtures") / "parking_cycle_game.json"
+        state = JsonGameStore(fixture).load()
+        self.store.save(state)
+        self.runner = GameRunner(self.store.load(), self.store, allow_tight_routes=True)
+        actions = self.runner.prepare_reset(GEOMETRY)
+        self.assertTrue(any(isinstance(action.source, ParkingSlot) and
+                            action.destination.name[1] in "3456"
+                            for action in actions))
+        link = FakeLink()
+        self.runner.execute_reset(link, GEOMETRY, lambda _action: True,
+                                  confirmation_source="simulation")
+        self.assertEqual(len(link.carries), len(actions))
+        self.assert_start()
+
     def test_stage_pawn_blocker_so_knight_goes_home_in_one_carry(self) -> None:
         # Physical arrangement of a home-square cycle. The remaining pieces
         # keep the standard inventory while the open lanes permit reset routes.

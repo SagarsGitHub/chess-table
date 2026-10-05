@@ -83,7 +83,38 @@ After stopping and closing the GUI server, resume the same physical checkpoint:
 .venv/bin/python -m chess_table_host.gui --resume --state "$physical_state" --port "$serial_port" --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
 ```
 
+The physical session observed on 2026-10-05 at `localhost:8765` uses
+`runs/gui-physical-20261005-152550.json` on `/dev/ttyACM0`. Its completed
+126-ply game ended in a draw, with 20 pieces parked. The older reset planner
+reported that retrieving the remaining parked pieces would trap a slot. It
+failed during full-plan preflight, before sending a reset `CARRY`; the saved
+board and parking inventory remain the source for the next attempt. To load
+the updated host code, stop that GUI server after it is idle, then restart it
+from WSL with the **same** checkpoint:
+
+```bash
+cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
+.venv/bin/python -m chess_table_host.gui --resume --state runs/gui-physical-20261005-152550.json --port /dev/ttyACM0 --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe
+```
+
+Compare the displayed expected board and all occupied parking slots with the
+table before requesting a loaded reset. Do not use `--new` for this position.
+The updated reset planner can temporarily stage a parked piece on an interior
+square to break a cycle of mutually blocked slot exits; it still preflights
+the complete return route before sending the first reset `CARRY`. A copy of
+this 126-ply checkpoint completed the 32-transfer reset in simulation, but
+the position still needs an observed physical reset.
+
 ## Pause, recover, and reset
+
+**End game & reset board** is available before checkmate or another game
+result. During play, it stops choosing new moves, finishes any chess move
+already in progress, including all transfers in a capture, then archives the
+played checkpoint and begins the board reset. If play is paused with a ready
+pending move, the host finishes that move first. The button shows the pending
+reset request while the current move settles. Once all 32 pieces are home and
+parking is empty, the saved state becomes a fresh standard-position game.
+Use this control for an orderly midgame reset.
 
 **Stop motion** sends a controller `STOP` immediately during a physical
 `CARRY`, `HOME`, or `REF`. During simulation, engine thinking, or between
@@ -99,12 +130,13 @@ position, or the entire pre-reset position during a board reset. A resumed
 session must resolve an uncertain checkpoint before **Start game** can
 continue. The GUI cannot determine the outcome by sensing the board.
 
-**Reset physical board** runs the checkpointed return plan when no chess move
-is pending. It archives the played checkpoint before moving pieces and makes
-a fresh standard-position game only after all 32 pieces are home and parking
-is empty. If a reset transfer is interrupted, reconcile it in the same way,
-then select **Reset physical board** to continue its saved plan. A reset
-cannot be used to bypass an uncertain chess move.
+After a completed or paused game with no pending move, the same control reads
+**Reset board for new game**. During an interrupted reset, it reads
+**Continue board reset**. The host preflights the full return plan before
+starting it and archives the played checkpoint before the first reset carry.
+If a reset transfer is interrupted, reconcile it in the same way, then
+continue the saved plan. An uncertain chess move must be physically inspected
+and reconciled before a reset can begin.
 
 ## Acceptance record to collect
 

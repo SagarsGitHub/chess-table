@@ -142,6 +142,17 @@ class GuiTests(unittest.TestCase):
                     self.assertEqual(sum(item is not None for item in state["physical_parking"]), 0)
                     self.assertEqual(len(state["physical_squares"]), 32)
                     self.assertEqual(len(list(Path(controller.store.path).parent.glob("game.before-reset-*.json"))), 1)
+                    status, _ = request("/api/start", {"mode": "manual_both"}, base)
+                    self.assertEqual(status, 202)
+                    wait_for(lambda: request("/api/state")[1]["can_move"])
+                    status, _ = request("/api/move", {"uci": "e2e4"}, base)
+                    self.assertEqual(status, 202)
+                    wait_for(lambda: request("/api/state")[1]["ply"] == 1)
+                    status, _ = request("/api/end-game-reset", {}, base)
+                    self.assertEqual(status, 202)
+                    wait_for(lambda: request("/api/state")[1]["ply"] == 0 and
+                             not request("/api/state")[1]["busy"])
+                    self.assertEqual(len(list(Path(controller.store.path).parent.glob("game.before-reset-*.json"))), 2)
                     status, body = request("/api/start", {"mode": "manual_both"}, "http://evil.example")
                     self.assertEqual(status, 403)
                     original_load = controller.store.load
@@ -190,9 +201,14 @@ class GuiTests(unittest.TestCase):
             self.assertTrue(link.started.wait(timeout=5))
             wait_for(lambda: controller.state()["pending"] is not None and
                      controller.state()["pending"]["phase"] == "in_flight")
+            controller.end_game_and_reset()
+            self.assertTrue(controller.state()["reset_requested"])
             controller.stop()
             self.assertTrue(link.stopped.wait(timeout=5))
             wait_for(lambda: not controller.state()["busy"])
+            self.assertFalse(controller.state()["reset_requested"])
+            self.assertIsNone(controller.state()["reset"])
+            self.assertFalse(list(Path(controller.store.path).parent.glob("game.before-reset-*.json")))
             self.assertEqual(controller.state()["phase"], "reconciliation_required")
             self.assertEqual(controller.state()["moves"], [])
             with self.assertRaisesRegex(ValueError, "confirm inspection"):
@@ -200,6 +216,82 @@ class GuiTests(unittest.TestCase):
             controller.reconcile("source", True)
             self.assertEqual(controller.state()["pending"]["phase"], "ready")
             self.assertEqual(controller.state()["physical_squares"]["e2"], "P")
+
+    def test_end_game_during_carry_finishes_move_then_resets_and_archives(self):
+        class HeldLink:
+            def __init__(self):
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.stop_calls = 0
+
+            def set_map(self, _bitmap):
+                pass
+
+            def carry(self, *_arguments):
+                if not self.started.is_set():
+                    self.started.set()
+                    self.release.wait(timeout=5)
+
+            def stop(self):
+                self.stop_calls += 1
+
+            def close(self):
+                pass
+
+        with game_controller(simulate=False) as controller:
+            link = HeldLink()
+            controller.link = link
+            controller.geometry = _route_geometry(_geometry_from_file(FIXTURE), 18.0, 18.0, 0.0)
+            controller.start("manual_both")
+            wait_for(lambda: controller.state()["can_move"])
+            controller.submit_move("e2e4")
+            self.assertTrue(link.started.wait(timeout=5))
+            controller.end_game_and_reset()
+            ending = controller.state()
+            self.assertEqual(ending["phase"], "ending_game")
+            self.assertTrue(ending["reset_requested"])
+            self.assertFalse(ending["can_move"])
+            self.assertFalse(ending["can_end_and_reset"])
+            link.release.set()
+            finished = wait_for(lambda: (
+                state if (state := controller.state())["ply"] == 0
+                and not state["busy"] and state["mode"] is None else None
+            ), timeout=10)
+            self.assertIsNone(finished["error"])
+            self.assertEqual(len(finished["physical_squares"]), 32)
+            self.assertFalse(any(finished["physical_parking"]))
+            self.assertEqual(link.stop_calls, 0)
+            archives = list(Path(controller.store.path).parent.glob("game.before-reset-*.json"))
+            self.assertEqual(len(archives), 1)
+            self.assertEqual(json.loads(archives[0].read_text())["moves"], ["e2e4"])
+
+    def test_end_game_from_human_turn_resets_without_waiting_for_a_move(self):
+        with game_controller() as controller:
+            controller.start("manual_both")
+            wait_for(lambda: controller.state()["can_move"])
+            controller.end_game_and_reset()
+            finished = wait_for(lambda: (
+                state if (state := controller.state())["ply"] == 0
+                and not state["busy"] and state["mode"] is None else None
+            ))
+            self.assertIsNone(finished["error"])
+            self.assertFalse(finished["reset_requested"])
+
+    def test_end_game_after_paused_move_finishes_it_before_reset(self):
+        with game_controller() as controller:
+            _link, geometry = controller._connection()
+            controller.runner.prepare_move("e2e4", geometry)
+            self.assertEqual(controller.state()["pending"]["phase"], "ready")
+            self.assertTrue(controller.state()["can_end_and_reset"])
+            controller.end_game_and_reset()
+            finished = wait_for(lambda: (
+                state if (state := controller.state())["ply"] == 0
+                and not state["busy"] and state["pending"] is None else None
+            ))
+            self.assertIsNone(finished["error"])
+            archives = list(Path(controller.store.path).parent.glob("game.before-reset-*.json"))
+            self.assertEqual(len(archives), 1)
+            self.assertEqual(json.loads(archives[0].read_text())["moves"], ["e2e4"])
 
     def test_second_owner_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
