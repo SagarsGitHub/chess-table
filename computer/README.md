@@ -111,6 +111,14 @@ allowance. The circular
 clearance model may reject a tight route that works in practice; it reports
 the failure without sending a carry.
 
+For Ubuntu WSL 2 in the Coding checkout, use `.venv/bin/python` and override
+the Windows defaults with the attached Linux serial port (`--port /dev/ttyACM0`
+or the port detected on your machine) and the WSL path to Stockfish (`--engine
+/mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe`).
+The [stage 4 runbook](../docs/STAGE4_TEST_GAME.md) has the verified setup and
+USB attachment steps. A completed scripted smoke checkpoint should be kept;
+use a new state filename for another `--new` run.
+
 For a scripted smoke test, use `--moves` with a fresh `--new --state` file; the
 program stops when the script ends. To resume a game against Stockfish, omit
 `--moves`. By default it finds a downloaded engine in the configured

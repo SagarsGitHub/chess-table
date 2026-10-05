@@ -2,7 +2,7 @@
 
 The target is a chess table that can complete a full game, park captured pieces around the perimeter, and recover predictably from interrupted motion. A stage is complete only when its acceptance evidence is recorded in this repository.
 
-**Current sequence:** Stage 1 electrical diagnosis is deferred at the user's request. Stage 2 and the software/simulator portion of stage 3 are implemented. The user reports that the empty-board physical test passed and supplied `GEOM X=249.7350 Y=251.9850 OX=-0.1325 OY=0.9925 P=31.2500 I=2.0000 PPM=133.3333`. Stage 4 now has a checkpointed supervised game runner, Stockfish integration, and a five-ply software smoke test; its physical test game and full-game acceptance remain open. During actual board movement, a limit closure must persist for 3 ms to stop motion. Switch activity at idle and between movement segments is ignored. Homing uses the first raw edge and confirms it after stopping.
+**Current sequence:** Stage 1 electrical diagnosis is deferred at the user's request. Stage 2 and the software/simulator portion of stage 3 are implemented. The user reports that the empty-board physical test passed and supplied `GEOM X=249.7350 Y=251.9850 OX=-0.1325 OY=0.9925 P=31.2500 I=2.0000 PPM=133.3333`. Stage 4 now has a checkpointed supervised game runner, Stockfish integration, and a five-ply software smoke test; its physical test game and full-game acceptance remain open. The host test suite passes under Ubuntu WSL 2 from the Coding checkout. During actual board movement, a limit closure must persist for 3 ms to stop motion. Switch activity at idle and between movement segments is ignored. Homing uses the first raw edge and confirms it after stopping.
 
 | Stage | Work | Acceptance evidence |
 | --- | --- | --- |
@@ -15,9 +15,15 @@ The target is a chess table that can complete a full game, park captured pieces 
 
 Stage 1 is tracked in [issue #1](https://github.com/SagarsGitHub/chess-table/issues/1). Stage 3 loaded hardware acceptance is tracked in [issue #2](https://github.com/SagarsGitHub/chess-table/issues/2).
 
+## Execution workspace
+
+Run the computer program from the checkout at `C:\Users\sagar\Documents\Coding\chess-table`, which Ubuntu WSL 2 sees as `/mnt/c/Users/sagar/Documents/Coding/chess-table`. Use its Linux `computer/.venv/bin/python` environment and the commands in [STAGE4_TEST_GAME.md](STAGE4_TEST_GAME.md). Each `--new` simulation or physical game needs a fresh checkpoint filename; `--resume` continues that checkpoint.
+
+Before physical play from WSL, attach the Uno USB device to WSL and select its detected `/dev/ttyACM*` or `/dev/ttyUSB*` port. The current Windows `COM3` config value cannot be passed as a WSL serial device. The Windows Stockfish download can be run from WSL using its `/mnt/c/Users/sagar/Documents/stockfish/...exe` path. The runner itself performs `HOME` or `REF`, reads live `GEOM`, and sends `MAP`. As of 2026-10-05, USB passthrough is not configured on this machine, so the physical stage 4 run remains open.
+
 ## Immediate next actions
 
-1. Find the Uno's serial port, run the supervised five-ply physical test in [STAGE4_TEST_GAME.md](STAGE4_TEST_GAME.md), and record each physical confirmation. The user reports 18 mm moving and standing diameters; path/centering error remains to be measured, so 0 mm margin is provisional.
+1. Run the supervised five-ply simulation from the WSL Coding checkout, attach the Uno to WSL, find its Linux serial port, then run the five-ply physical test in [STAGE4_TEST_GAME.md](STAGE4_TEST_GAME.md) and record each confirmation. The user reports 18 mm moving and standing diameters; path/centering error remains to be measured, so 0 mm margin is provisional.
 2. When stage 1 resumes, record the relay module, electromagnet supply/current, wiring, and a serial log around the reported release reset. Resolve it before claiming loaded reliability.
 3. Expand loaded routes across all board regions and 32 parking slots, then complete a local game against Stockfish and exercise mid-capture fault recovery.
 

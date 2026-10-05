@@ -474,7 +474,10 @@ def main(argv: list[str] | None = None) -> int:
         state = GameState.new()
         store.save(state)
     else:
-        state = store.load()
+        try:
+            state = store.load()
+        except (GameStateError, OSError, ValueError) as exc:
+            parser.error(f"could not load state file {args.state}: {exc}")
     runner = GameRunner(state, store)
     link = None
     try:

@@ -322,34 +322,72 @@ class GameState:
 
     @classmethod
     def from_json(cls, value: object) -> GameState:
-        if not isinstance(value, dict) or value.get("version") not in {2, STATE_VERSION}:
+        if (not isinstance(value, dict) or type(value.get("version")) is not int or
+                value["version"] not in {1, 2, STATE_VERSION}):
             raise GameStateError("unsupported game-state version")
         try:
-            if value["version"] == STATE_VERSION and value.get("promotion_rule") != PROMOTION_RULE:
+            version = value["version"]
+            if version == STATE_VERSION and value.get("promotion_rule") != PROMOTION_RULE:
                 raise GameStateError("game-state promotion rule does not match pawn stand-in design")
-            if value["version"] == 2:
-                # v2 physically replaced promoted pawns. Those checkpoints
-                # cannot be silently interpreted under the stand-in rule.
-                history = list(value["moves"])
+            history = list(value["moves"])
+            if version in {1, 2}:
+                # Older versions physically replaced promoted pawns. Their
+                # snapshots cannot be interpreted under the stand-in rule.
                 pending = value.get("pending")
-                if any(len(uci) == 5 for uci in history) or (
-                    pending is not None and len(pending.get("uci", "")) == 5
+                if pending is not None and not isinstance(pending, dict):
+                    raise GameStateError("invalid pending move")
+                if any(isinstance(uci, str) and len(uci) == 5 for uci in history) or (
+                    pending is not None and isinstance(pending.get("uci"), str)
+                    and len(pending["uci"]) == 5
                 ):
                     raise GameStateError(
-                        "version 2 promotion checkpoint needs manual reconciliation"
+                        f"version {version} promotion checkpoint needs manual reconciliation"
                     )
+            if version == 1:
+                # v1 saved no initial FEN. Its CLI only created standard-start
+                # games, so infer that start only when every saved move replays
+                # to the exact saved FEN. Do not guess for other positions.
+                replay = chess.Board()
+                try:
+                    for uci in history:
+                        replay.push(replay.parse_uci(uci))
+                except (TypeError, ValueError) as exc:
+                    raise GameStateError("version 1 move history cannot be replayed") from exc
+                if replay.fen() != value["board_fen"]:
+                    raise GameStateError(
+                        "version 1 initial position cannot be inferred from the standard start"
+                    )
+                initial_fen = chess.Board().fen()
+            else:
+                initial_fen = value["initial_fen"]
             state = cls(
                 board_fen=value["board_fen"],
                 committed_parking=ParkingInventory(tuple(value["committed_parking"])),
                 physical_squares=dict(value["physical_squares"]),
                 physical_parking=list(value["physical_parking"]),
-                moves=list(value["moves"]),
-                pending=PendingMove.from_json(value["pending"]) if value["pending"] else None,
+                moves=history,
+                pending=PendingMove.from_json(value["pending"]) if value["pending"] is not None else None,
                 events=list(value.get("events", [])),
-                initial_fen=value["initial_fen"],
+                initial_fen=initial_fen,
             )
             state.validate()
+            if version in {1, 2} and state.pending is not None:
+                # Validate the whole saved plan before resuming any remaining
+                # physical action, not just its already-confirmed prefix.
+                if any(isinstance(action, ManualReplacement) for action in state.pending.actions):
+                    raise GameStateError("legacy pending promotion needs manual reconciliation")
+                squares = state.expected_physical_squares()
+                slots = list(state.committed_parking.slots)
+                for action in state.pending.actions:
+                    _apply_action(squares, slots, action)
+                after = state.board()
+                after.push_uci(state.pending.uci)
+                if (squares != _board_pieces(after) or
+                        tuple(slots) != state.pending.parking_after.slots):
+                    raise GameStateError("legacy pending actions do not match the legal move")
             return state
+        except GameStateError:
+            raise
         except (KeyError, TypeError, ValueError) as exc:
             raise GameStateError(f"invalid game-state file: {exc}") from exc
 

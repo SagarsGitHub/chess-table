@@ -72,57 +72,101 @@ does not exchange pieces by hand. After promotion and each later action,
 confirm both the legal piece shown in the game state and the actual pawn's
 location. On resume, reconcile the pawn stand-in with its recorded legal type.
 
-## PowerShell commands
+## Run from the Coding checkout in WSL
 
-Close the Arduino Serial Monitor before starting; only one program should use
-the Uno's COM port. [`computer/config.json`](../computer/config.json) defaults
-to `COM3`, 18/18 mm footprints, a 0 mm margin, and
-`~/Documents/stockfish`. Edit that file to change these defaults, pass
-`--config path/to/another.json`, or override a single run with `--port COMx`
-and `--engine /path/to/stockfish`. From PowerShell, enter the computer
-directory and check the connected ports:
+Open Ubuntu (WSL 2). This Windows checkout appears at
+`/mnt/c/Users/sagar/Documents/Coding/chess-table`. Create a Linux virtual
+environment in its `computer` directory; the `.venv` directory is ignored by
+Git. The checked-in `config.json` still has Windows defaults (`COM3` and
+`~/Documents/stockfish`), so the physical WSL commands below override them.
 
-```powershell
-Set-Location 'C:\Users\sagar\Documents\ChatGPT\chess table\computer'
-& .venv/Scripts/python.exe -m chess_table_host.play --list-ports
+```bash
+cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -q
 ```
 
-Run the complete line in simulation first. `--new` requires a fresh state
-file; choose another path if this one already exists:
+Run the complete five-ply line in simulation first. Every `--new` run needs
+a new checkpoint name; `--resume` continues a saved game and does not replay
+its completed moves. The timestamp keeps earlier runs available:
 
-```powershell
-& .venv/Scripts/python.exe -m chess_table_host.play --simulate --new --state runs/smoke.json --geometry-file fixtures/board_geometry_2026-10-05.json --moves e2e4 a7a6 e4e5 d7d5 e5d6
+```bash
+sim_state="runs/smoke-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --simulate --new --state "$sim_state" --geometry-file fixtures/board_geometry_2026-10-05.json --moves e2e4 a7a6 e4e5 d7d5 e5d6
 ```
 
-After the physical standard setup is verified, use a separate fresh state
-file. The command uses configured `COM3`; if the Uno appears on another port,
-change `config.json` or add `--port COMx`:
+### Connect the Uno to WSL for physical play
+
+At the 2026-10-05 setup check, the Uno appeared as `COM3` in Windows but was
+not attached to WSL. WSL 2 requires USB passthrough; a Windows COM number is
+not a WSL serial path.
+Follow [Microsoft's USB connection guide](https://learn.microsoft.com/en-us/windows/wsl/connect-usb)
+to install `usbipd-win` if needed. Close Arduino Serial Monitor first. In an
+**administrator PowerShell**, list devices, identify the Uno's bus ID, and
+share it once:
 
 ```powershell
-& .venv/Scripts/python.exe -m chess_table_host.play --new --state runs/physical-smoke.json --moves e2e4 a7a6 e4e5 d7d5 e5d6
+winget install --interactive --exact dorssel.usbipd-win
+usbipd list
+usbipd bind --busid <BUSID>
 ```
 
-To continue that checkpoint against Stockfish, use `--resume` and the same
-physical state file and configured port. The runner finds Stockfish in
-`~/Documents/stockfish` by default; White remains the human side. Enter the
-intended White UCI move without moving the piece by hand; the table carries
-both White and Black pieces:
+If `usbipd` is not found immediately after installation, open a new
+administrator PowerShell before running `usbipd list` and `bind`.
+
+Then, in a regular PowerShell, attach that bus ID to WSL. Repeat attachment
+after a reboot or USB disconnect. Windows cannot use the Uno while it is
+attached to WSL.
 
 ```powershell
-& .venv/Scripts/python.exe -m chess_table_host.play --resume --state runs/physical-smoke.json --human white
+usbipd attach --wsl --busid <BUSID>
 ```
 
-On Linux or another installation layout, add `--engine /path/to/stockfish`;
-the override accepts an executable or a folder containing one.
+Back in WSL, discover the actual Linux port. It may be `/dev/ttyACM0` or
+`/dev/ttyUSB0`. The `Configured serial port: COM3` line from `--list-ports`
+is only the Windows default; use the detected `/dev/...` port with `--port`.
+If access is denied, check the device permissions and add your WSL user to
+`dialout` with `sudo usermod -aG dialout "$USER"`, then start a new WSL login
+and attach the Uno again.
+
+```bash
+.venv/bin/python -m chess_table_host.play --list-ports
+ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null
+```
+
+After verifying the standard starting position and empty parking, set the
+detected port below and start a fresh physical checkpoint. The runner performs
+`HOME` or `REF`, reads live `GEOM`, and sends `MAP` itself. Add `--home` only if
+you want to force a full calibration.
+
+```bash
+serial_port=/dev/ttyACM0  # replace with the port reported on your WSL machine
+physical_state="runs/physical-smoke-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --new --state "$physical_state" --port "$serial_port" --moves e2e4 a7a6 e4e5 d7d5 e5d6
+```
+
+To continue that checkpoint against Stockfish, keep the same state file and
+port. The existing Windows Stockfish executable was verified from this WSL
+installation; pass its WSL path because WSL's `~/Documents` is different from
+Windows Documents. White remains the human side. Enter the intended White
+UCI move without moving the piece by hand; the table carries both sides.
+
+```bash
+.venv/bin/python -m chess_table_host.play --resume --state "$physical_state" --port "$serial_port" --engine /mnt/c/Users/sagar/Documents/stockfish/stockfish-windows-x86-64-universal.exe --human white
+```
+
+If you open a new WSL shell, set `physical_state` and `serial_port` again to
+the saved file and attached port before using `--resume`.
 
 The runner restricts Stockfish to legal moves that pass route preflight. If
 none pass the current clearance model, it pauses the game. Check the saved
 state and actual board before continuing; do not bypass the route check for a
 loaded move.
 
-The physical runner writes a timestamped serial transcript beside the state
-file as `runs/physical-smoke.serial.jsonl`. It records request frames,
-`ACK`/`DONE`/`ERR`, and `!BOOT`; `--serial-log path` changes its location.
+The physical runner writes a serial transcript beside the chosen state file
+with the suffix `.serial.jsonl`. It records request frames, `ACK`/`DONE`/`ERR`,
+and `!BOOT`; `--serial-log path` changes its location.
 
 For each transfer, require `ACK` and terminal `DONE CARRY`, then have the
 operator confirm pickup, final placement, and that nearby pieces did not
@@ -139,14 +183,15 @@ On an unexpected position, missed pickup or release, route fault, limit stop,
 timeout, disconnect, or `!BOOT`, stop the game. Record the request, ACK/terminal
 response, and actual piece locations. Do not retry the uncertain `CARRY` or
 advance the logical move automatically. Reconcile every board square and
-parking slot by inspection, restore the carriage reference with `HOME` or
-`REF`, read `GEOM`, send a new truthful `MAP`, and resume only from the
-reconciled game state. For a fault between victim parking and attacker motion,
-the victim remains parked in the physical inventory; the chess move is still
-unfinished. On resume, choose SOURCE or DESTINATION only after restoring or
-verifying that action's result. A move paused between confirmed actions can
-continue from its checkpoint or be aborted after manually restoring the entire
-pre-move board and parking inventory.
+parking slot by inspection, then resume only from the reconciled game state.
+The runner restores the carriage reference with `HOME` or `REF`, reads `GEOM`,
+and sends a truthful `MAP` before the next `CARRY`. For a fault between victim
+parking and attacker motion, the victim remains parked in the physical
+inventory; the chess move is still unfinished. On resume, choose SOURCE or
+DESTINATION only after restoring or verifying that action's result. A move
+paused between confirmed actions can continue from its checkpoint or be
+aborted after manually restoring the entire pre-move board and parking
+inventory.
 
 ## Evidence to keep
 

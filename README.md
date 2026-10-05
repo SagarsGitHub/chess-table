@@ -4,7 +4,7 @@ This private repository brings together a Python chess controller and Arduino Un
 
 ## Current state
 
-The repository is an integration foundation, **not yet a functioning full chess game**. The computer side now checks legal moves, assigns captured pieces to 32 perimeter slots, plans general carry routes, encodes the compact occupancy map, and uses a request-ID serial link. The Uno firmware accepts bounded square-to-square and square-to-parking carries with map and route checks. Software tests and a compiled-Uno simulator exercise that path. The board has no physical piece sensing, and a reported controller reset when the electromagnet releases remains unresolved. Loaded end-to-end testing and game orchestration are still pending.
+The repository has a supervised game runner, **but a complete physical game has not yet been accepted**. The computer side checks legal moves, assigns captured pieces to 32 perimeter slots, plans carry routes, checkpoints each confirmed action, and can play against Stockfish. Promoted pawns remain physical pawn stand-ins. The Uno firmware accepts bounded square-to-square and square-to-parking carries with map and route checks. Software tests and a compiled-Uno simulator exercise that path. The board has no physical piece sensing, and a reported controller reset when the electromagnet releases remains unresolved. The physical stage 4 game test is still pending.
 
 The reference Python project contains game clients and uses `python-chess`, but its hardware implementation is incomplete and its 9600-baud serial command does not match the new Uno's 115200-baud framed protocol. The original software is kept in `legacy/` for traceability; new integration work belongs in `computer/` and `firmware/`.
 
@@ -25,4 +25,4 @@ See [architecture](docs/ARCHITECTURE.md) and [roadmap](docs/ROADMAP.md) before e
 
 ## Development starting points
 
-The computer-side modules can be tested without moving hardware: from `computer/`, install `requirements.txt` and run `python -m unittest discover -s tests -v`. The firmware is a PlatformIO project targeting Uno; from `firmware/`, run `pio run`, then follow the [simulator notes](firmware/tests/README.md). Stage 1 electrical diagnosis is deferred at the user's request. Loaded game tests wait for that reset investigation and the physical acceptance gates in the roadmap.
+Run the computer program from the Coding checkout in Ubuntu WSL 2 using the [stage 4 runbook](docs/STAGE4_TEST_GAME.md). Its simulation and unit tests do not move hardware. The firmware is a PlatformIO project targeting Uno; from `firmware/`, run `pio run`, then follow the [simulator notes](firmware/tests/README.md). Stage 1 electrical diagnosis is deferred at the user's request. The physical acceptance gates remain in the roadmap.
