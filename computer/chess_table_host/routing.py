@@ -310,6 +310,9 @@ def plan_transfer_route(
         destination_point if isinstance(destination, ParkingSlot) else None
     )
     occupied_square_points = frozenset(location_point(square) for square in squares)
+    # The pickup square is vacated as soon as the carry starts. Only pieces
+    # still standing on the board can make a horizontal lane feel crowded.
+    standing_square_points = occupied_square_points - {source_point}
     edge_centers = frozenset(
         point for point in _adjacent_edge_centers(park_point)
         if point not in occupied_square_points
@@ -414,12 +417,33 @@ def plan_transfer_route(
         return hypot(end[0] - start[0], end[1] - start[1])
 
     # A small turn cost makes a smooth route preferable to a barely shorter
-    # zigzag. The segment length still dominates any substantial detour.
+    # zigzag. Crowded horizontal grid edges get a much larger cost below.
     turn_cost = 0.15 * (geometry.square_pitch_mm if geometry else 2.0)
+
+    @lru_cache(maxsize=None)
+    def horizontal_crowding_penalty(a: HalfSquarePoint, b: HalfSquarePoint) -> float:
+        """Discourage long carries beside standing pieces without banning them.
+
+        Every horizontal grid edge runs between square centers one half-step
+        above and below its midpoint. Two occupied sides make the narrowest
+        corridor; the per-edge charge accumulates over a long run. A detour
+        is preferred when available, while a necessary squeeze still routes.
+        """
+
+        if a.y != b.y or a.x == b.x or any(point.x & 1 or point.y & 1 for point in (a, b)):
+            return 0.0
+        midpoint = (a.x + b.x) // 2
+        nearby = sum(
+            HalfSquarePoint(midpoint, a.y + offset) in standing_square_points
+            for offset in (-1, 1) if 0 <= a.y + offset <= 16
+        )
+        # Equivalent to one extra edge for a single neighbor, or five extra
+        # edges when a piece can press into the route from both sides.
+        return segment_length(a, b) * (5.0 if nearby == 2 else 1.0 if nearby == 1 else 0.0)
 
     def shortest_route(waypoint_limit: int | None) -> tuple[HalfSquarePoint, ...] | None:
         start: State = first if waypoint_limit is None else (source_point, None, False, 1)
-        # Weighted length, actual length, turns, retained waypoints, graph links.
+        # Risk-weighted length, actual length, turns, retained waypoints, links.
         initial_cost = (0.0, 0.0, 0, 1, 0)
         best: dict[State, tuple[float, float, int, int, int]] = {start: initial_cost}
         previous: dict[State, State | None] = {start: None}
@@ -442,7 +466,7 @@ def plan_transfer_route(
                 turn = int(heading is not None and heading != next_heading)
                 distance = segment_length(here, next_point)
                 next_cost = (
-                    cost[0] + distance + turn_cost * turn,
+                    cost[0] + distance + turn_cost * turn + horizontal_crowding_penalty(here, next_point),
                     cost[1] + distance,
                     cost[2] + turn,
                     kept,

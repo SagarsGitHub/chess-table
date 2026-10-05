@@ -160,6 +160,72 @@ class RoutingTests(unittest.TestCase):
         self.assertTrue(route.clearance_ignored)
         self._assert_firmware_segments(route.points, {self._point(square.name) for square in squares})
 
+    def test_long_crowded_horizontal_corridor_chooses_clear_detour(self) -> None:
+        # The tempting y=6 lane has standing pieces on both sides for six
+        # squares. Its y=8 neighbor still runs beside the row-four pieces.
+        source, destination = BoardSquare("a4"), BoardSquare("h4")
+        standing = tuple(BoardSquare(f"{file}{rank}") for rank in (3, 4) for file in "bcdefg")
+        route = plan_transfer_route(
+            Transfer("P", source, destination, "move"),
+            occupied_squares=(source, *standing), occupied_parking_slots=(),
+            geometry=self._geometry(18, 18), ignore_piece_clearance=True,
+            max_waypoints=12,
+        )
+
+        self.assertEqual(route.points, (
+            HalfSquarePoint(1, 7), HalfSquarePoint(2, 8),
+            HalfSquarePoint(4, 10), HalfSquarePoint(12, 10),
+            HalfSquarePoint(14, 8), HalfSquarePoint(15, 7),
+        ))
+        self.assertGreater(
+            self._route_distance(route.points),
+            self._route_distance((HalfSquarePoint(1, 7), HalfSquarePoint(2, 6),
+                                  HalfSquarePoint(14, 6), HalfSquarePoint(15, 7))),
+        )
+        self._assert_firmware_segments(route.points, {self._point(square.name) for square in (source, *standing)})
+
+    def test_logged_h3_to_c1_carry_avoids_two_sided_horizontal_run(self) -> None:
+        # A physical game sent (12,2)->(6,2) through the d1/d2 and f1/f2
+        # pairs. Replan that occupancy with its measured geometry and override.
+        occupied = tuple(BoardSquare(name) for name in (
+            "a1 b1 d1 e1 f1 g1 h1 a2 b2 c2 d2 f2 h3 d4 e4 f5 "
+            "d6 g6 a7 b7 c7 d7 e7 h7 a8 b8 c8 d8 e8 f8 g8 h8"
+        ).split())
+        geometry = RouteGeometry(
+            31.25, 18, 18, 0,
+            x_travel_mm=249.735, y_travel_mm=251.985,
+            end_inset_mm=2.0, pulses_per_mm=133.3333,
+            board_origin_x_mm=-0.1325, board_origin_y_mm=0.9925,
+        )
+        route = plan_transfer_route(
+            Transfer("N", BoardSquare("h3"), BoardSquare("c1"), "move"),
+            occupied_squares=occupied, occupied_parking_slots=(),
+            geometry=geometry, ignore_piece_clearance=True, max_waypoints=12,
+        )
+
+        self.assertEqual(route.wire_points, (
+            (15, 5), (14, 6), (8, 6), (6, 4), (6, 2), (5, 1),
+        ))
+        self._assert_firmware_segments(route.points, {self._point(square.name) for square in occupied})
+
+    def test_unavoidable_horizontal_corridor_remains_routable(self) -> None:
+        # A packed board leaves only the bottom perimeter for this carry.
+        # Crowding is a preference, never a new geometric prohibition.
+        source, destination = BoardSquare("a1"), BoardSquare("h1")
+        occupied = tuple(BoardSquare(name) for name in chess.SQUARE_NAMES if name != "h1")
+        route = plan_transfer_route(
+            Transfer("P", source, destination, "move"),
+            occupied_squares=occupied, occupied_parking_slots=(),
+            geometry=self._geometry(18, 18), ignore_piece_clearance=True,
+            max_waypoints=12,
+        )
+
+        self.assertEqual(route.points, (
+            HalfSquarePoint(1, 1), HalfSquarePoint(2, 0),
+            HalfSquarePoint(14, 0), HalfSquarePoint(15, 1),
+        ))
+        self._assert_firmware_segments(route.points, {self._point(square.name) for square in occupied})
+
     def test_clearance_override_keeps_center_bounds_and_waypoint_checks(self) -> None:
         source = BoardSquare("e4")
         with self.assertRaises(NoRouteError):
@@ -258,7 +324,8 @@ class RoutingTests(unittest.TestCase):
             transfer, occupied_squares=occupied,
             occupied_parking_slots=(ParkingSlot(0),),
         )
-        self.assertTrue(any(point.y == 0 for point in nominal.points[1:-1]))
+        self.assertEqual(nominal.points[0], HalfSquarePoint(0, 0))
+        self.assertEqual(nominal.points[-1], self._point("h1"))
         with self.assertRaises(NoRouteError):
             plan_transfer_route(
                 transfer, occupied_squares=occupied,

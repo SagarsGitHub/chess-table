@@ -82,11 +82,20 @@ configured tight-route fallback may route closer to occupied pieces than the
 travel limits, and the 12-waypoint bound. Watch neighboring pieces. Pass
 `--strict-clearance` to disable this fallback for a session.
 
+Long horizontal passages between standing pieces have caused excessive
+interaction when neighbors were slightly off-center, even with the slower
+crowded-motion profile. Check piece centering and neighboring displacement
+during these carries. The host now strongly deprioritizes long crowded
+horizontal passages. This route preference has passed software replanning but
+still needs a loaded trial; see [routing](ROUTING.md) and the
+[roadmap](ROADMAP.md#immediate-next-actions).
+
 The Uno carries at 50 mm/s and 400 mm/s²; magnet-on horizontal grid segments
-beside occupied squares slow to 30 mm/s and 250 mm/s². The user reports that
-these profiles work on the board. Firmware changes still require flashing the
-Uno: stop the GUI first to release the serial port, then resume the same
-checkpoint. Refreshing the browser only updates the interface.
+beside occupied squares slow to 30 mm/s and 250 mm/s². The user reports longer
+runs work overall, with the crowded-horizontal limitation above. The PTFE
+dry-lube trial did not help and is discontinued. Firmware changes still
+require flashing the Uno: stop the GUI first to release the serial port, then
+resume the same checkpoint. Refreshing the browser only updates the interface.
 
 After stopping and closing the GUI server, resume the same physical checkpoint:
 
@@ -144,6 +153,7 @@ and reconciled before a reset can begin.
 ## Acceptance record
 
 Keep the checkpoint, serial transcript, and observations about piece slip,
-neighboring movement, stops, and reconciliation. The [roadmap](ROADMAP.md)
-tracks the completed game and reset, remaining special-move and midgame
-recovery trials, and the deferred electrical diagnosis.
+neighboring movement, stops, and reconciliation. The user accepts the physical
+game, reset, and recovery path. The [roadmap](ROADMAP.md) tracks crowded-route
+avoidance, unrecorded promotion and interrupted-capture cases, and the
+deferred electrical diagnosis.
