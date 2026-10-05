@@ -10,6 +10,9 @@
 // Occupancy describes commanded centers; no physical piece sensors are present.
 class BoardController {
 public:
+    enum class Result : uint8_t { None, Complete, Canceled, Fault };
+    enum class StartError : uint8_t { None, Busy, Reference, Map, Route, Geometry };
+    static constexpr uint8_t MAX_WAYPOINTS = 12;
     BoardController(LinearAxis &x, LinearAxis &y, AxisCalibration &xc,
                     AxisCalibration &yc, Electromagnet &magnet);
     bool isActive() const { return operation_ != Operation::Idle; }
@@ -19,6 +22,13 @@ public:
     bool hasSavedGeometry() const { return hasSaved_; }
     float savedSpan(uint8_t axis) const { return saved_.span[axis]; }
     bool referenced() const;
+    float boardOriginXmm() const { return size_.boardOriginXmm; }
+    float boardOriginYmm() const { return size_.boardOriginYmm; }
+    bool mapKnown() const { return pieces_.known(); }
+    bool loadMap(const uint8_t bytes[12]);
+    StartError startCarry(uint8_t source, uint8_t destination,
+                          const HalfSquarePoint *points, uint8_t count);
+    Result takeResult() { const Result result = result_; result_ = Result::None; return result; }
     void printState();
     void resetPieces(bool full);
     void editPiece(uint8_t location, bool present);
@@ -60,11 +70,12 @@ private:
     uint8_t fixtureStep_ = 255;
     bool fixtureMove_ = false;
     bool generated_ = false;
+    Result result_ = Result::None;
     Operation operation_ = Operation::Idle;
     Stage stage_ = Stage::Moving;
     uint8_t nextSquare_ = 0;
     uint8_t walkIndex_ = 0;
-    KnightRoute route_;
+    HalfSquarePoint route_[MAX_WAYPOINTS] = {};
     uint8_t routeIndex_ = 0;
     uint8_t routeCount_ = 4;
     uint8_t source_ = 0, destination_ = 0;

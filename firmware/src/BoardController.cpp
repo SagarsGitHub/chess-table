@@ -12,6 +12,19 @@ const uint8_t fixture[][2] PROGMEM = {
     {3,68},{59,77} // middle of bottom/top edges
 };
 constexpr uint8_t FIXTURE_STEPS = sizeof(fixture) / sizeof(fixture[0]) * 2;
+
+HalfSquarePoint locationHalf(uint8_t id) {
+    if (id >= 64) return parkingPoint(id - 64);
+    return {static_cast<int8_t>(2 * (id % 8) + 1),
+            static_cast<int8_t>(2 * (id / 8) + 1)};
+}
+
+bool pointOnSegment(HalfSquarePoint p, HalfSquarePoint a, HalfSquarePoint b) {
+    const int16_t dx = b.x - a.x, dy = b.y - a.y;
+    const int16_t px = p.x - a.x, py = p.y - a.y;
+    const int16_t dot = px * dx + py * dy;
+    return px * dy == py * dx && dot >= 0 && dot <= dx * dx + dy * dy;
+}
 }
 
 BoardController::BoardController(LinearAxis &x, LinearAxis &y, AxisCalibration &xc,
@@ -26,6 +39,68 @@ void BoardController::invalidate() {
 
 bool BoardController::referenced() const {
     return generated_ && calibrations_[0]->isCalibrated() && calibrations_[1]->isCalibrated();
+}
+
+bool BoardController::loadMap(const uint8_t bytes[12]) {
+    if (isActive() || axes_[0]->isRunning() || axes_[1]->isRunning() ||
+        calibrations_[0]->isActive() || calibrations_[1]->isActive()) return false;
+    pieces_.load(bytes);
+    return true;
+}
+
+BoardController::StartError BoardController::startCarry(
+    uint8_t source, uint8_t destination, const HalfSquarePoint *points, uint8_t count) {
+    if (isActive() || axes_[0]->isRunning() || axes_[1]->isRunning() ||
+        calibrations_[0]->isActive() || calibrations_[1]->isActive()) return StartError::Busy;
+    if (!referenced()) return StartError::Reference;
+    if (!pieces_.canMove(source, destination)) return StartError::Map;
+    if (source == destination || (source >= 64 && destination >= 64) ||
+        points == nullptr || count < 2 || count > MAX_WAYPOINTS) return StartError::Route;
+    const HalfSquarePoint sourcePoint = locationHalf(source), destinationPoint = locationHalf(destination);
+    if (points[0].x != sourcePoint.x || points[0].y != sourcePoint.y ||
+        points[count - 1].x != destinationPoint.x || points[count - 1].y != destinationPoint.y)
+        return StartError::Route;
+    const uint8_t parking = source >= 64 ? source : destination;
+    const bool hasParking = parking >= 64;
+    const HalfSquarePoint parkPoint = hasParking ? locationHalf(parking) : HalfSquarePoint{0, 0};
+    for (uint8_t i = 0; i < count; ++i) {
+        const HalfSquarePoint p = points[i];
+        if (p.x < 0 || p.x > 16 || p.y < 0 || p.y > 16 ||
+            (p.x & 1) != (p.y & 1)) return StartError::Route;
+        const bool square = (p.x & 1) != 0;
+        if (i > 0 && i + 1 < count && square) {
+            const uint8_t squareId = ((p.y - 1) / 2) * 8 + (p.x - 1) / 2;
+            const int8_t dx = p.x - parkPoint.x, dy = p.y - parkPoint.y;
+            if (!hasParking || (dx != 1 && dx != -1) ||
+                (dy != 1 && dy != -1) || pieces_.occupied(squareId)) return StartError::Route;
+        }
+        const BoardPoint target = routePoint(p);
+        if (!inside(0, lroundf(target.x * Config::PULSES_PER_MM)) ||
+            !inside(1, lroundf(target.y * Config::PULSES_PER_MM))) return StartError::Geometry;
+        if (i == 0) continue;
+        const HalfSquarePoint previous = points[i - 1];
+        const int8_t dx = p.x - previous.x, dy = p.y - previous.y;
+        if (square == ((previous.x & 1) != 0)) {
+            if (square || !((dx == 0 && dy != 0) || (dy == 0 && dx != 0)))
+                return StartError::Route;
+        } else if ((dx != 1 && dx != -1) || (dy != 1 && dy != -1))
+            return StartError::Route;
+        // The host plans a path around occupied centers. Verify that an
+        // occupied square or parking slot is not crossed by any segment.
+        for (uint8_t occupied = 0; occupied < 96; ++occupied) {
+            if (occupied != source && pieces_.occupied(occupied) &&
+                pointOnSegment(locationHalf(occupied), previous, p)) return StartError::Route;
+        }
+    }
+    if (!preflight()) return StartError::Geometry;
+    for (uint8_t i = 0; i < count; ++i) route_[i] = points[i];
+    routeCount_ = count;
+    routeIndex_ = 0;
+    source_ = source; destination_ = destination;
+    operation_ = Operation::CarryKnight;
+    result_ = Result::None;
+    waitForRelease();
+    return StartError::None;
 }
 
 void BoardController::loadSaved() {
@@ -119,8 +194,7 @@ bool BoardController::preflight() {
         Serial.println(F("Board unavailable; run h first.")); return false;
     }
     for (uint8_t i = 0; i < 2; ++i) {
-        if (!axes_[i]->isReady() || axes_[i]->anyLimitTriggered() ||
-            !inside(i, axes_[i]->positionPulses())) {
+        if (!axes_[i]->isReady() || !inside(i, axes_[i]->positionPulses())) {
             fail(F("Board position/limit invalid; run h.")); return false;
         }
     }
@@ -156,7 +230,7 @@ bool BoardController::moveTo(BoardPoint p, bool pieceProfile) {
     targets_[1] = lroundf(p.y * Config::PULSES_PER_MM);
     int32_t delta[2];
     for (uint8_t i = 0; i < 2; ++i) {
-        if (!inside(i, targets_[i]) || axes_[i]->anyLimitTriggered()) {
+        if (!inside(i, targets_[i])) {
             fail(F("Board target outside measured bounds / limit active.")); return false;
         }
         delta[i] = targets_[i] - axes_[i]->positionPulses();
@@ -176,12 +250,13 @@ bool BoardController::moveTo(BoardPoint p, bool pieceProfile) {
     Serial.print(F("Move X,Y (mm): ")); Serial.print(p.x, 3); Serial.print(','); Serial.print(p.y, 3);
     Serial.print(pieceProfile ? F("; piece mm/s=") : F("; travel mm/s="));
     Serial.println(speed, 1);
+    axes_[0]->resetBoardLimitFilter(); axes_[1]->resetBoardLimitFilter();
     bool accepted = true;
     // Submit both ramps before the AVR ramp-management interrupt can run.
     // These are proportional independent ramps, not a general CNC interpolator.
     ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         for (uint8_t i = 0; i < 2; ++i) {
-            if (delta[i] != 0 && !axes_[i]->movePulses(delta[i])) { accepted = false; break; }
+            if (delta[i] != 0 && !axes_[i]->movePulses(delta[i], true)) { accepted = false; break; }
         }
         if (!accepted) { axes_[0]->stop(); axes_[1]->stop(); }
     }
@@ -198,6 +273,7 @@ void BoardController::moveSquare(uint8_t file, uint8_t rank) {
 
 void BoardController::startSquare(uint8_t file, uint8_t rank) {
     if (file > 7 || rank > 7 || !preflight()) return;
+    result_ = Result::None;
     operation_ = Operation::Square;
     targetFile_ = file; targetRank_ = rank;
     waitForRelease();
@@ -217,13 +293,14 @@ void BoardController::moveWalkSquare() {
 
 void BoardController::startWalk(bool allSquares) {
     if (!preflight()) return;
+    result_ = Result::None;
     operation_ = allSquares ? Operation::Walk : Operation::Next;
     walkIndex_ = allSquares ? 0 : nextSquare_;
     waitForRelease();
 }
 
 BoardPoint BoardController::knightPoint(uint8_t index) const {
-    return routePoint(route_.points[index]);
+    return routePoint(route_[index]);
 }
 
 BoardPoint BoardController::routePoint(HalfSquarePoint point) const {
@@ -252,7 +329,7 @@ void BoardController::startKnight(uint8_t fromFile, uint8_t fromRank,
         Serial.println(F("Invalid knight move: need 2 by 1 squares.")); return;
     }
     if (isActive()) return;
-    route_ = candidate;
+    for (uint8_t i = 0; i < 4; ++i) route_[i] = candidate.points[i];
     routeCount_ = 4;
     startRoute(carryPiece, fromRank * 8 + fromFile, toRank * 8 + toFile);
 }
@@ -263,7 +340,8 @@ void BoardController::startParking(uint8_t file, uint8_t rank, uint8_t slot, boo
         Serial.println(F("Invalid parking: use an adjacent edge square and slot 00..31.")); return;
     }
     if (isActive()) return;
-    route_ = candidate; routeCount_ = 2;
+    for (uint8_t i = 0; i < 2; ++i) route_[i] = candidate.points[i];
+    routeCount_ = 2;
     const uint8_t square = rank * 8 + file, park = 64 + slot;
     startRoute(true, retrieve ? park : square, retrieve ? square : park);
 }
@@ -287,6 +365,7 @@ void BoardController::startRoute(bool carryPiece, uint8_t source, uint8_t destin
         Serial.print(p.x, 3); Serial.print(','); Serial.println(p.y, 3);
     }
     operation_ = carryPiece ? Operation::CarryKnight : Operation::DryKnight;
+    result_ = Result::None;
     source_ = source; destination_ = destination;
     if (carryPiece && !fixtureMove_) fixtureStep_ = 255;
     routeIndex_ = 0;
@@ -328,11 +407,13 @@ void BoardController::cancel() {
     if (operation_ == Operation::CarryKnight) pieces_.invalidate();
     fixtureStep_ = 255; fixtureMove_ = false;
     operation_ = Operation::Idle;
+    result_ = Result::Canceled;
     invalidate();
 }
 
 void BoardController::fail(const __FlashStringHelper *message) {
     cancel();
+    result_ = Result::Fault;
     Serial.println(message);
     Serial.println(F("Board canceled; magnet OFF. Run h before board moves."));
 }
@@ -348,11 +429,14 @@ void BoardController::finish() {
         F("Board motion complete."));
     fixtureMove_ = false;
     operation_ = Operation::Idle;
+    result_ = Result::Complete;
 }
 
 void BoardController::update() {
     if (!isActive()) return;
-    if (axes_[0]->anyLimitTriggered() || axes_[1]->anyLimitTriggered()) {
+    if (stage_ == Stage::Moving &&
+        (axes_[0]->isRunning() || axes_[1]->isRunning()) &&
+        (axes_[0]->boardLimitTriggered() || axes_[1]->boardLimitTriggered())) {
         fail(F("Board limit hit; both axes stopped.")); return;
     }
     const uint32_t elapsed = millis() - stageStartedMs_;

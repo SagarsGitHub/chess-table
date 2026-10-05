@@ -23,6 +23,10 @@ public:
     bool maxLimitTriggered() const;
     bool anyLimitTriggered() const;
     bool directionBlocked(int32_t pulses) const;
+    // Board travel polls these only while a motor is moving. Calibration
+    // continues to read raw limit state above.
+    bool boardLimitTriggered() const;
+    void resetBoardLimitFilter();
 
     // Returns false on invalid/out-of-range speed; previous setting is retained.
     // Applies to an ongoing move with the configured acceleration, without
@@ -32,8 +36,9 @@ public:
     float speedMmPerSecond() const { return speedMmPerSecond_; }
 
     // Rejects busy, uninitialized, blocked-direction, or zero-distance requests.
-    // Moving away from a triggered end is allowed (both triggered blocks both).
-    bool movePulses(int32_t pulses);
+    // boardTravel bypasses the raw switch guard; BoardController watches limits
+    // after motors start. Calibration always uses the immediate raw guard.
+    bool movePulses(int32_t pulses, bool boardTravel = false);
     bool moveMm(float mm);
     // Commanded pulse position, zeroed at the MIN slow latch by calibration.
     // This is an open-loop estimate; it does not detect mechanical missed steps.
@@ -42,6 +47,8 @@ public:
     void stop(); // Cancel the ramp AND queued pulses; no deceleration.
 
 private:
+    bool confirmedLimit(uint8_t pin, bool enabled, bool &seen,
+                        uint32_t &sinceUs) const;
     uint32_t maxPulseRate() const;
     const uint8_t stepPin_;
     const uint8_t directionPin_;
@@ -53,4 +60,6 @@ private:
     FastAccelStepper *motor_ = nullptr;
     bool ready_ = false;
     float speedMmPerSecond_ = 0.0f;
+    mutable bool minSeen_ = false, maxSeen_ = false;
+    mutable uint32_t minSinceUs_ = 0, maxSinceUs_ = 0;
 };

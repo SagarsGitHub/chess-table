@@ -72,12 +72,40 @@ bool LinearAxis::anyLimitTriggered() const {
     return minLimitTriggered() || maxLimitTriggered();
 }
 
+bool LinearAxis::confirmedLimit(uint8_t pin, bool enabled, bool &seen,
+                                uint32_t &sinceUs) const {
+    if (!enabled || digitalRead(pin) != Config::LIMIT_TRIGGERED_LEVEL) {
+        seen = false;
+        return false;
+    }
+    const uint32_t now = micros();
+    if (!seen) {
+        seen = true;
+        sinceUs = now;
+        return false;
+    }
+    return static_cast<uint32_t>(now - sinceUs) >= Config::BOARD_LIMIT_CONFIRM_US;
+}
+
+bool LinearAxis::boardLimitTriggered() const {
+    // Always sample both inputs, even after one is confirmed.
+    const bool min = confirmedLimit(minLimitPin_, minLimitEnabled_, minSeen_, minSinceUs_);
+    const bool max = confirmedLimit(maxLimitPin_, maxLimitEnabled_, maxSeen_, maxSinceUs_);
+    return min || max;
+}
+
+void LinearAxis::resetBoardLimitFilter() {
+    minSeen_ = false;
+    maxSeen_ = false;
+}
+
 bool LinearAxis::directionBlocked(int32_t pulses) const {
     return pulses > 0 ? maxLimitTriggered() : pulses < 0 && minLimitTriggered();
 }
 
-bool LinearAxis::movePulses(int32_t pulses) {
-    if (!ready_ || isRunning() || directionBlocked(pulses) || pulses == 0) return false;
+bool LinearAxis::movePulses(int32_t pulses, bool boardTravel) {
+    if (!ready_ || isRunning() || (!boardTravel && directionBlocked(pulses)) ||
+        pulses == 0) return false;
     const int64_t target = static_cast<int64_t>(positionPulses()) + pulses;
     if (target > INT32_MAX || target < INT32_MIN) return false;
     if (motor_->move(pulses) == MOVE_OK) return true;

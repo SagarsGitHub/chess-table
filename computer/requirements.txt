@@ -1,1 +1,2 @@
 python-chess>=1.999,<2
+pyserial>=3.5,<4

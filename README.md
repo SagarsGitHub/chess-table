@@ -4,24 +4,25 @@ This private repository brings together a Python chess controller and Arduino Un
 
 ## Current state
 
-The repository is an integration foundation, **not yet a functioning full chess game**. The imported Uno firmware homes the XY carriage, stores measured geometry, carries knights, and parks or retrieves a piece at an adjacent edge square. It has 32 perimeter parking coordinates and a commanded occupancy bitmap. It cannot route an arbitrary capture from the board to a parking slot. It has no physical piece sensing. A reported controller reset when the electromagnet releases remains unresolved and is a prerequisite for loaded end-to-end testing.
+The repository is an integration foundation, **not yet a functioning full chess game**. The computer side now checks legal moves, assigns captured pieces to 32 perimeter slots, plans general carry routes, encodes the compact occupancy map, and uses a request-ID serial link. The Uno firmware accepts bounded square-to-square and square-to-parking carries with map and route checks. Software tests and a compiled-Uno simulator exercise that path. The board has no physical piece sensing, and a reported controller reset when the electromagnet releases remains unresolved. Loaded end-to-end testing and game orchestration are still pending.
 
-The reference Python project contains game clients and uses `python-chess`, but its hardware implementation is incomplete and its 9600-baud serial command does not match the imported Uno firmware's 115200-baud manual command set. The original software is kept in `legacy/` for traceability; new integration work belongs in `computer/` and `firmware/`.
+The reference Python project contains game clients and uses `python-chess`, but its hardware implementation is incomplete and its 9600-baud serial command does not match the new Uno's 115200-baud framed protocol. The original software is kept in `legacy/` for traceability; new integration work belongs in `computer/` and `firmware/`.
 
 ## Repository map
 
 | Path | Purpose |
 | --- | --- |
-| `computer/` | New computer-side chess state, parking planning, and, later, device transport and game UI. |
-| `firmware/` | Imported PlatformIO Uno firmware and its existing tests. |
+| `computer/` | Chess state and parking plans, measured-geometry routing, wire encoding, and serial transport. |
+| `firmware/` | PlatformIO Uno firmware and compiled-device simulator tests. |
 | `docs/ARCHITECTURE.md` | Responsibility and state boundaries. |
 | `docs/ROADMAP.md` | Milestones, acceptance criteria, and hardware gates. |
-| `docs/PROTOCOL.md` | Proposed serial protocol and migration from the current manual commands. |
+| `docs/PROTOCOL.md` | Version 1 serial frames, occupancy bitmap, and carry command. |
+| `docs/ROUTING.md` | Route topology, measured clearance inputs, and test scope. |
 | `docs/PROVENANCE.md` | Source revisions, license, and known gaps. |
 | `legacy/chess_automated/` | Unmodified reference Python application and its MIT license, moved intact from the source repository. |
 
-See [architecture](docs/ARCHITECTURE.md) and [roadmap](docs/ROADMAP.md) before extending either side. The [firmware README](firmware/README.md) contains its current command set, pinout, calibration procedure, and fixture tests. Software simulations do not confirm that the physical magnet picked up or delivered a piece.
+See [architecture](docs/ARCHITECTURE.md) and [roadmap](docs/ROADMAP.md) before extending either side. The [firmware README](firmware/README.md) contains its command set, pinout, and calibration procedure. Software simulations do not confirm that the physical magnet picked up or delivered a piece.
 
 ## Development starting points
 
-The computer-side planner can be developed and tested without moving hardware. See `computer/README.md` for its commands and limitations. The firmware is a PlatformIO project (`cd firmware; pio run`) targeting Uno; its [test notes](firmware/tests/README.md) describe the existing simulator. Do not start a loaded game test until the electrical reset is resolved and the physical acceptance gates in the roadmap have passed.
+The computer-side modules can be tested without moving hardware: from `computer/`, install `requirements.txt` and run `python -m unittest discover -s tests -v`. The firmware is a PlatformIO project targeting Uno; from `firmware/`, run `pio run`, then follow the [simulator notes](firmware/tests/README.md). Stage 1 electrical diagnosis is deferred at the user's request. Loaded game tests wait for that reset investigation and the physical acceptance gates in the roadmap.

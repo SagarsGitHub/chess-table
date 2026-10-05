@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TypeAlias
+from typing import Callable, TypeAlias
 
 import chess
 
@@ -88,6 +88,7 @@ class ManualReplacement:
 
 
 Action: TypeAlias = Transfer | ManualReplacement
+SlotSelector: TypeAlias = Callable[[BoardSquare, str, tuple[str | None, ...]], ParkingSlot]
 
 
 @dataclass(frozen=True)
@@ -142,12 +143,29 @@ def _first_empty(slots: list[str | None]) -> int:
         raise NoEmptyParkingSlotError("All 32 parking slots are occupied") from exc
 
 
+def _select_empty_slot(
+    slots: list[str | None], source: BoardSquare, piece: str, selector: SlotSelector | None
+) -> int:
+    # The default preserves the original deterministic lowest-vacancy policy.
+    if selector is None:
+        return _first_empty(slots)
+    if all(symbol is not None for symbol in slots):
+        raise NoEmptyParkingSlotError("All 32 parking slots are occupied")
+    choice = selector(source, piece, tuple(slots))
+    if not isinstance(choice, ParkingSlot):
+        raise PlanError("Slot selector must return a ParkingSlot")
+    if slots[choice.slot_id] is not None:
+        raise PlanError(f"Slot selector chose occupied slot {choice.slot_id}")
+    return choice.slot_id
+
+
 def plan_move(
     board: chess.Board,
     uci: str,
     parking: ParkingInventory,
     *,
     promotion_policy: PromotionPolicy = PromotionPolicy.MANUAL_REPLACEMENT,
+    slot_selector: SlotSelector | None = None,
 ) -> MovePlan:
     """Plan an ordered logical move without changing ``board`` or ``parking``.
 
@@ -155,7 +173,10 @@ def plan_move(
     the attacking piece moves. En passant removes the pawn from its actual
     square. Castling emits separate king and rook transfers. A promotion either
     requires a manual pawn replacement or takes a same-color piece already in
-    parking and parks the pawn. No motor route or acknowledgement is implied.
+    parking and parks the pawn. ``slot_selector`` may choose a physically
+    reachable empty slot based on its own occupancy and geometry model; it is
+    called with source, piece symbol, and the current immutable slot snapshot.
+    No motor route or acknowledgement is implied.
     """
 
     if board.chess960:
@@ -186,7 +207,7 @@ def plan_move(
             captured_square = move.to_square
         captured = board.piece_at(captured_square)
         assert captured is not None  # a legal capture always has a victim
-        slot = _first_empty(slots)
+        slot = _select_empty_slot(slots, _board_square(captured_square), captured.symbol(), slot_selector)
         actions.append(
             Transfer(captured.symbol(), _board_square(captured_square), ParkingSlot(slot), "capture")
         )
@@ -219,7 +240,7 @@ def plan_move(
                 raise PromotionPieceUnavailableError(
                     f"No {promoted!r} piece is parked for promotion"
                 ) from exc
-            pawn_slot = _first_empty(slots)
+            pawn_slot = _select_empty_slot(slots, _board_square(move.from_square), mover.symbol(), slot_selector)
             actions.extend(
                 (
                     Transfer(mover.symbol(), _board_square(move.from_square), ParkingSlot(pawn_slot), "promotion_pawn"),

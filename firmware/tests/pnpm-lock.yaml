@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      avr8js:
+        specifier: 0.21.1
+        version: 0.21.1
+
+packages:
+
+  avr8js@0.21.1:
+    resolution: {integrity: sha512-lS1vPaB0gB2GXoPrHFQOUG/5CRORjvnmjbs8SiPZdJpt4HkV0+v6HnNeXxo/X9lPqumqphls2Qyql8zsw9rBaw==}
+    engines: {node: '>= 20.19.0', npm: '>= 10.0.0'}
+
+snapshots:
+
+  avr8js@0.21.1: {}

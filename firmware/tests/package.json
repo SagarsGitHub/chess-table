@@ -2,11 +2,9 @@
   "name": "xychess-firmware-tests",
   "private": true,
   "scripts": {
-    "test": "node firmware-sim.cjs",
-    "test:faults": "node firmware-sim.cjs --faults",
-    "test:small-table": "node firmware-sim.cjs --small-table",
-    "test:full-board": "node firmware-sim.cjs --full-board",
-    "test:storage": "node firmware-sim.cjs --storage && node firmware-sim.cjs --restore && node firmware-sim.cjs --corrupt && node firmware-sim.cjs --interrupted-save && node firmware-sim.cjs --config-change"
+    "test": "node machine-sim.cjs && node machine-sim.cjs --restore && node machine-sim.cjs --small-table",
+    "test:storage": "node machine-sim.cjs --restore && node machine-sim.cjs --corrupt && node machine-sim.cjs --interrupted-save && node machine-sim.cjs --config-change",
+    "test:small-table": "node machine-sim.cjs --small-table"
   },
   "devDependencies": { "avr8js": "0.21.1" }
 }

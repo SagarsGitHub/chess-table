@@ -17,6 +17,10 @@ public:
             bits_[i] = startingPosition && (i < 2 || i == 6 || i == 7) ? 0xFF : 0;
         known_ = true;
     }
+    void load(const uint8_t bytes[12]) {
+        for (uint8_t i = 0; i < 12; ++i) bits_[i] = bytes[i];
+        known_ = true;
+    }
     bool canMove(uint8_t from, uint8_t to) const {
         return known_ && from < 96 && to < 96 && occupied(from) && !occupied(to);
     }

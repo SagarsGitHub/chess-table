@@ -11,6 +11,7 @@ from chess_table_host import (
     ParkingSlot,
     PromotionPieceUnavailableError,
     PromotionPolicy,
+    PlanError,
     Transfer,
     UnsupportedVariantError,
     plan_move,
@@ -218,6 +219,46 @@ class PlannerTests(unittest.TestCase):
             ParkingSlot(1.0)
         with self.assertRaises(ValueError):
             BoardSquare("i9")
+
+    def test_slot_selector_receives_capture_snapshot_and_may_choose_other_slot(self) -> None:
+        board = played("e2e4", "d7d5")
+        calls = []
+
+        def choose(source, piece, slots):
+            calls.append((source, piece, slots))
+            return ParkingSlot(7)
+
+        plan = plan_move(board, "e4d5", ParkingInventory.empty(), slot_selector=choose)
+
+        self.assertEqual(plan.actions[0].destination, ParkingSlot(7))
+        self.assertEqual(calls, [(BoardSquare("d5"), "p", (None,) * 32)])
+
+    def test_slot_selector_receives_promoted_pawn_and_validates_vacancy(self) -> None:
+        board = chess.Board("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
+        slots = [None] * 32
+        slots[4] = "Q"
+        calls = []
+
+        def choose(source, piece, snapshot):
+            calls.append((source, piece, snapshot))
+            return ParkingSlot(6)
+
+        plan = plan_move(
+            board, "a7a8q", ParkingInventory(tuple(slots)),
+            promotion_policy=PromotionPolicy.PARKED_PIECE,
+            slot_selector=choose,
+        )
+        self.assertEqual(plan.actions[0].destination, ParkingSlot(6))
+        self.assertEqual(calls, [(BoardSquare("a7"), "P", tuple(slots))])
+
+        with self.assertRaises(PlanError):
+            plan_move(board, "a7a8q", ParkingInventory(tuple(slots)),
+                      promotion_policy=PromotionPolicy.PARKED_PIECE,
+                      slot_selector=lambda *_: ParkingSlot(4))
+        with self.assertRaises(PlanError):
+            plan_move(board, "a7a8q", ParkingInventory(tuple(slots)),
+                      promotion_policy=PromotionPolicy.PARKED_PIECE,
+                      slot_selector=lambda *_: 6)
 
 
 if __name__ == "__main__":

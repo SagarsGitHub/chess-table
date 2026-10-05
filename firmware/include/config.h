@@ -66,6 +66,9 @@ constexpr float CALIBRATION_MIN_TRAVEL_MM = 20.0f;  // Reject implausibly short 
 constexpr uint32_t CALIBRATION_STAGE_TIMEOUT_MS = 30000;
 constexpr uint16_t SWITCH_SETTLE_MS = 20; // Confirm only after stopping at first edge.
 constexpr uint16_t SWITCH_CONFIRM_TIMEOUT_MS = 250;
+// Board travel ignores a switch closure unless it persists this long. Homing
+// deliberately uses the first raw edge and is unaffected by this setting.
+constexpr uint16_t BOARD_LIMIT_CONFIRM_US = 3000;
 constexpr float END_CLEARANCE_MM = 2.0f; // Inset from each measured trip point.
 
 // Latest perimeter-storage plan: 8x8 board, 32 perimeter grid intersections,
@@ -113,3 +116,6 @@ static_assert(Config::CALIBRATION_BACKOFF_MM > 0 && Config::END_CLEARANCE_MM > 0
 static_assert(Config::SWITCH_CONFIRM_TIMEOUT_MS > Config::SWITCH_SETTLE_MS &&
                   Config::CALIBRATION_STAGE_TIMEOUT_MS > Config::SWITCH_CONFIRM_TIMEOUT_MS,
               "Switch settling must fit inside calibration timeouts");
+static_assert(Config::BOARD_LIMIT_CONFIRM_US >= 1000 &&
+                  Config::BOARD_LIMIT_CONFIRM_US <= 10000,
+              "Board limit confirmation must stay short");

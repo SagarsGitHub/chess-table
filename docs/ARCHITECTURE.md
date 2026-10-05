@@ -18,7 +18,7 @@ The computer owns **what should happen** in a game. The Arduino owns **how to ex
 
 1. The computer validates a proposed UCI move against its current board.
 2. It creates a logical plan. A capture first moves the victim to an available parking slot; en passant uses the pawn's actual square. Castling requires two carries. Promotion requires an explicit physical piece-exchange policy.
-3. A physical route planner checks the current geometry and occupied locations, then selects routes supported by the firmware. The current firmware supports only knight carries and adjacent edge-square parking/retrieval, so most logical plans cannot yet execute.
+3. A physical route planner checks the current `GEOM` calibration and occupied locations, then selects a route within the Uno's 12-waypoint `CARRY` limit. The software can express square-to-square and square-to-perimeter transfers; loaded hardware clearance remains to be validated.
 4. The computer sends one bounded command, waits for an ID-matched completion, and records the outcome. A timeout, reset, stop, or fault marks the physical state **uncertain**; software must not advance the authoritative game position automatically.
 5. When all operations and any required physical confirmation complete, the computer commits the chess move and updated parking inventory together.
 
@@ -36,7 +36,7 @@ flowchart LR
 
 ## Parking geometry
 
-The imported firmware maps 32 perimeter grid intersections: 00–08 along the bottom, 09–17 along the top, 18–24 on the left, and 25–31 on the right. Each slot can hold one piece. Its existing `p` and `u` commands operate only between a slot and an adjacent edge square. An interior captured piece needs a new route to a reachable edge/slot; that route must account for other pieces and the magnet's real clearance. The firmware bitmap represents commanded occupancy for 64 squares plus 32 slots, not sensed occupancy or identity.
+The firmware maps 32 perimeter grid intersections: 00–08 along the bottom, 09–17 along the top, 18–24 on the left, and 25–31 on the right. Each slot can hold one piece. A `CARRY` route can bring an interior captured piece to a reachable slot through grid intersections; the host must account for other pieces and the magnet's real clearance. The firmware bitmap represents commanded occupancy for 64 squares plus 32 slots, not sensed occupancy or identity.
 
 ## Recovery contract
 
