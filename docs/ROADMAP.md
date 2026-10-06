@@ -26,11 +26,13 @@ Software evidence includes 141-ply and 228-ply Stockfish self-play simulations, 
 
 - Diagonal grid legs and distance/turn-aware routing replaced circuitous paths. The host requires Uno `CARRY_DIAG`; software tests show straight `c1h6` and `e2g4` paths while occupied centers remain blocked.
 - Loaded motion uses 50 mm/s at 400 mm/s², or 30 mm/s at 250 mm/s² on horizontal grid legs next to occupied squares. Compiled motor simulation verified both profiles; the user reports longer physical runs work overall.
-- Board reset preflights the full return, checkpoints every transfer, and creates a new game only after all 32 pieces are home. Direct returns favor bishops and knights, then other back-rank pieces, then pawns. When parking exits form a cycle, an interior square can temporarily stage a blocker. Simulated reset plans improved from 15 to 12 transfers on the 16-ply checkpoint and 33 to 32 on the 155-ply checkpoint. The recovered 126-ply physical reset is accepted.
+- Board reset preflights the full return, checkpoints every transfer, and creates a new game only after all 32 pieces are home. Keeping parked pieces retrievable takes precedence; among safe, routable returns, the order now favors rooks, knights, bishops, kings and queens, then pawns. An interior square can temporarily stage a blocker when needed. Earlier simulations, before this order change, improved reset plans from 15 to 12 transfers on the 16-ply checkpoint and 33 to 32 on the 155-ply checkpoint. The recovered 126-ply physical reset is accepted; the new order still needs a loaded trial.
 
 The ferrite rod under each piece is the glass contact point. PTFE dry lube did not help and is discontinued. If friction work resumes, test one piece with a thin skid or stable three-pad base, measuring slide force, magnet grip, rocking, and glass marks before changing the set. Added thickness may weaken magnetic coupling.
 
 At 31.25 mm pitch, two centered 18 mm standing pieces leave a 13.25 mm gap, already smaller than the 18 mm moving footprint. Off-center pieces narrow it further. The host now adds cumulative cost to crowded horizontal edges, favoring a detour or shorter exposed passage while preserving travel and waypoint limits. Replanning a logged `h3` to `c1` carry replaced a 93.75 mm two-sided horizontal leg with a six-waypoint route without one. This is software evidence; the new route still needs a loaded trial.
+
+The user also reports that a crowded knight carry can pick up a neighboring piece while leaving the knight behind. The exact route and point of wrong pickup are not yet recorded. Capture the occupancy, route, clearance-override status, and observed pickup timing before changing the magnetic or routing model.
 
 ## Full-game GUI
 

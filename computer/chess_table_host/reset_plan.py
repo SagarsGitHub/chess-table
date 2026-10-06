@@ -24,8 +24,8 @@ def plan_reset(
 ) -> tuple[Transfer, ...]:
     """Plan every carry against a copied inventory before any motor command.
 
-    Direct returns take priority. Staging breaks cycles only when needed, and
-    each candidate is checked for route feasibility and remaining slot exits.
+    Parking exits stay open while safe, routable returns follow piece priority.
+    Staging breaks cycles only when needed.
     """
     target = _board_pieces(chess.Board())
     squares = dict(squares_before)
@@ -41,12 +41,8 @@ def plan_reset(
     )
 
     def piece_priority(piece: str) -> int:
-        """Prefer awkward and back-rank pieces over pawns."""
-        if piece.upper() in "BN":
-            return 0
-        if piece.upper() in "KQR":
-            return 1
-        return 2
+        """Return outer back-rank pieces first, then central pieces and pawns."""
+        return {"R": 0, "N": 1, "B": 2, "K": 3, "Q": 3, "P": 4}[piece.upper()]
 
     def vacant_homes(piece: str, source: BoardSquare | ParkingSlot) -> list[str]:
         """Try matching home squares in nearest-first order."""
@@ -101,6 +97,29 @@ def plan_reset(
                 return True
         return False
 
+    def parked_candidates() -> list[int]:
+        """Rank occupied slots, using open approaches to break piece ties."""
+        return sorted(
+            (index for index, piece in enumerate(slots) if piece is not None),
+            key=lambda index: (
+                piece_priority(slots[index]),
+                sum(name not in squares for name in _parking_approaches(ParkingSlot(index))),
+                index,
+            ),
+        )
+
+    def try_parked_home(index: int, accessible: set[int]) -> bool:
+        """Return a parked piece only if all other parked exits stay open."""
+        if index not in accessible:
+            return False
+        source = ParkingSlot(index)
+        for name in vacant_homes(slots[index], source):
+            destination = BoardSquare(name)
+            trial = Transfer(slots[index], source, destination, "reset_board")
+            if preserves_remaining_exits(trial) and try_transfer(source, destination):
+                return True
+        return False
+
     def stage(source_name: str, *, opening: int | None = None) -> bool:
         """Use a vacant interior square to break a return or exit cycle."""
         source = BoardSquare(source_name)
@@ -138,9 +157,23 @@ def plan_reset(
         if not wrong_homes:
             break
         moved = False
-        for name in wrong_homes:
-            if try_direct_home(name):
-                moved = True
+        # Compare direct board and parked returns before staging a blocker.
+        # A blocked board rook must not make a reachable parked rook wait
+        # behind a pawn on another wrong home square.
+        accessible = _accessible_parking(slots, squares)
+        choices = sorted(
+            [(piece_priority(squares[name]), 0, order, BoardSquare(name))
+             for order, name in enumerate(wrong_homes)] +
+            [(piece_priority(slots[index]), 1, order, ParkingSlot(index))
+             for order, index in enumerate(parked_candidates())],
+            key=lambda choice: choice[:3],
+        )
+        for _, _, _, source in choices:
+            if isinstance(source, BoardSquare):
+                moved = try_direct_home(source.name)
+            else:
+                moved = try_parked_home(source.slot_id, accessible)
+            if moved:
                 break
         if moved:
             continue
@@ -169,43 +202,34 @@ def plan_reset(
         ):
             raise NoRouteError(f"cannot open an approach to parking slot {slot_id}")
 
-    # Return off-home back-rank pieces from the board before retrieving
-    # parked pawns. All occupied parking slots are accessible now, and
-    # each direct return must preserve every one of those exits.
-    while True:
-        candidates = sorted(
-            (name for name, piece in squares.items()
-             if piece_priority(piece) < 2 and piece != target.get(name)),
-            key=lambda name: (piece_priority(squares[name]), name),
-        )
-        if not any(try_direct_home(name) for name in candidates):
-            break
-
+    # Compare direct board returns with parked returns by piece priority.
+    # All occupied slots have an exit now; every candidate must preserve the
+    # remaining exits. A blocked higher-priority piece can be retried after
+    # another return opens space.
     while any(slots):
         accessible = _accessible_parking(slots, squares)
+        board_choices = sorted(
+            (name for name, piece in squares.items()
+             if piece.upper() != "P" and piece != target.get(name)),
+            key=lambda name: (piece_priority(squares[name]), name),
+        )
+        parked_choices = parked_candidates()
         choices = sorted(
-            (index for index, piece in enumerate(slots) if piece is not None),
-            key=lambda index: (
-                piece_priority(slots[index]),
-                sum(name not in squares for name in _parking_approaches(ParkingSlot(index))),
-                index,
-            ),
+            [(piece_priority(squares[name]), 0, order, BoardSquare(name))
+             for order, name in enumerate(board_choices)] +
+            [(piece_priority(slots[index]), 1, order, ParkingSlot(index))
+             for order, index in enumerate(parked_choices)],
+            key=lambda choice: choice[:3],
         )
         chosen = False
-        for index in choices:
-            if index not in accessible:
-                continue
-            source = ParkingSlot(index)
-            destinations = vacant_homes(slots[index], source)
-            for name in destinations:
-                destination = BoardSquare(name)
-                trial = Transfer(slots[index], source, destination, "reset_board")
-                if not preserves_remaining_exits(trial):
-                    continue
-                if try_transfer(source, destination):
+        for _, _, _, source in choices:
+            if isinstance(source, BoardSquare):
+                if try_direct_home(source.name):
                     chosen = True
                     break
-            if chosen:
+                continue
+            if try_parked_home(source.slot_id, accessible):
+                chosen = True
                 break
         if not chosen:
             # Parked pieces can form an ordering cycle even when every
@@ -216,7 +240,7 @@ def plan_reset(
             # square, then retry the newly unblocked home transfers.
             # Keep the same route and remaining-exit checks as a direct
             # return; no speculative CARRY is sent during preflight.
-            for index in choices:
+            for index in parked_choices:
                 if index not in accessible:
                     continue
                 source = ParkingSlot(index)

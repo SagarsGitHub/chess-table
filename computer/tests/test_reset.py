@@ -18,6 +18,7 @@ from chess_table_host.game import (
 )
 from chess_table_host.planner import BoardSquare, ParkingInventory, ParkingSlot, Transfer
 from chess_table_host.play import SimulatedLink, _geometry_from_file, main
+from chess_table_host.reset_plan import plan_reset
 from chess_table_host.routing import RouteGeometry
 
 
@@ -82,6 +83,66 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(actions[1].destination, BoardSquare("h8"))
         self.assertEqual(len(actions), 4)
 
+    def test_reset_prefers_outer_back_rank_pieces_across_board_and_parking(self) -> None:
+        squares = dict(self.runner.state.physical_squares)
+        slots = [None] * 32
+        slots[8] = squares.pop("h1")
+        for home, displaced in (
+            ("g1", "g3"), ("f1", "f3"), ("d1", "d3"),
+            ("e1", "e3"), ("a2", "a3"),
+        ):
+            squares[displaced] = squares.pop(home)
+
+        # All routes are feasible in this test, so its action order isolates
+        # the priority policy from geometry and parking-exit decisions.
+        actions = plan_reset(squares, slots, GEOMETRY, lambda *_args: None)
+        self.assertEqual([action.piece for action in actions],
+                         ["R", "N", "B", "Q", "K", "P"])
+        self.assertEqual(actions[0].source, ParkingSlot(8))
+        self.assertEqual(actions[-1].destination, BoardSquare("a2"))
+
+    def test_parked_rook_precedes_unrelated_wrong_home_pawn(self) -> None:
+        squares = dict(self.runner.state.physical_squares)
+        slots = [None] * 32
+        slots[8] = squares.pop("h1")
+        squares["b3"] = squares.pop("b1")
+        squares["b1"] = squares.pop("a2")
+
+        actions = plan_reset(squares, slots, GEOMETRY, lambda *_args: None)
+        self.assertEqual(actions[0], Transfer(
+            "R", ParkingSlot(8), BoardSquare("h1"), "reset_board",
+        ))
+        self.assertEqual([action.piece for action in actions], ["R", "P", "N"])
+
+    def test_blocked_board_rook_does_not_delay_reachable_parked_rook(self) -> None:
+        squares = dict(self.runner.state.physical_squares)
+        slots = [None] * 32
+        slots[17] = squares.pop("h8")
+        squares["g3"] = squares.pop("g1")
+        squares["g1"] = squares.pop("h1")
+        squares["h1"] = squares.pop("a2")
+
+        # The pawn blocks the board rook from h1, while the parked rook can
+        # return safely through the open h8 approach.
+        actions = plan_reset(squares, slots, GEOMETRY, lambda *_args: None)
+        self.assertEqual(actions[0], Transfer(
+            "r", ParkingSlot(17), BoardSquare("h8"), "reset_board",
+        ))
+        self.assertEqual([action.piece for action in actions],
+                         ["r", "P", "R", "N"])
+
+    def test_parked_pawn_exits_before_rook_closes_its_only_approach(self) -> None:
+        squares = dict(self.runner.state.physical_squares)
+        slots = [None] * 32
+        squares["a3"] = squares.pop("a1")
+        slots[0] = squares.pop("a2")
+
+        actions = plan_reset(squares, slots, GEOMETRY, lambda *_args: None)
+        self.assertEqual(actions, (
+            Transfer("P", ParkingSlot(0), BoardSquare("a2"), "reset_board"),
+            Transfer("R", BoardSquare("a3"), BoardSquare("a1"), "reset_board"),
+        ))
+
     def test_board_knight_returns_before_parked_pawn_when_exits_stay_open(self) -> None:
         self.play("e2e4", "e7e5", "f1c4", "b8c6", "c4f7", "e8f7")
         actions = self.runner.preflight_reset(GEOMETRY)
@@ -108,19 +169,16 @@ class ResetTests(unittest.TestCase):
         parked = [action for action in actions if isinstance(action.source, ParkingSlot)]
         self.assertEqual([action.piece for action in parked], ["B", "p"])
 
-    def test_full_game_reset_breaks_parked_home_cycle(self) -> None:
-        # A 126-ply game left 20 pieces parked. Three of their remaining
-        # return homes formed a cycle: q->d8 would trap b, b->f8 would trap r,
-        # and r->a8 would trap q. The complete reset must stage one piece and
-        # reach the standard setup without sending an unroutable transfer.
+    def test_full_game_reset_handles_parked_home_cycle(self) -> None:
+        # A 126-ply game left 20 pieces parked. Returning q->d8, b->f8,
+        # and r->a8 in that order would close each other's exits. The chosen
+        # order may avoid that cycle or stage a piece to break it.
         fixture = Path(__file__).with_name("fixtures") / "parking_cycle_game.json"
         state = JsonGameStore(fixture).load()
         self.store.save(state)
         self.runner = GameRunner(self.store.load(), self.store, allow_tight_routes=True)
         actions = self.runner.prepare_reset(GEOMETRY)
-        self.assertTrue(any(isinstance(action.source, ParkingSlot) and
-                            action.destination.name[1] in "3456"
-                            for action in actions))
+        self.assertEqual(sum(isinstance(action.source, ParkingSlot) for action in actions), 20)
         link = FakeLink()
         self.runner.execute_reset(link, GEOMETRY, lambda _action: True,
                                   confirmation_source="simulation")

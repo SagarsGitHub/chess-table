@@ -132,7 +132,7 @@ capture_state="runs/reset-capture-$(date +%Y%m%d-%H%M%S).json"
 .venv/bin/python -m chess_table_host.play --resume --reset-board --state "$capture_state" --port "$serial_port"
 ```
 
-Reset preflights the full return, archives the played checkpoint as `.before-reset-<UTC timestamp>.json`, and checkpoints each transfer. It clears the game only when all pieces are home. The planner favors direct bishop and knight returns, then other back-rank pieces, then pawns, but may stage a blocker when slot exits would otherwise become trapped. Compare the proposed order, final board, and empty parking with the actual table.
+Reset preflights the full return, archives the played checkpoint as `.before-reset-<UTC timestamp>.json`, and checkpoints each transfer. It clears the game only when all pieces are home. Parking exits take precedence: a return cannot close an available exit, and blocked slots are opened before the main return pass. Among safe, routable returns, the planner favors rooks, knights, bishops, kings and queens, then pawns. It may move a blocker temporarily to a vacant interior square when that opens a home or parking exit. Compare the proposed order, final board, and empty parking with the actual table.
 
 ## Interruption, recovery, and evidence
 
