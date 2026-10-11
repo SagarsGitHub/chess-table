@@ -57,6 +57,7 @@ Browser origins and nonlocal Host headers are rejected.
 | --- | --- |
 | `GET /v1/status` | Read expected position, source binding, phase and `can_move`. |
 | `POST /v1/session/start` | Bind a fresh game or resume its matching Aina binding. |
+| `POST /v1/session/reset` | End the fenced game after its current move, then restore standard setup. |
 | `POST /v1/moves/resolve` | Resolve an expression to a unique legal UCI move without motion. |
 | `POST /v1/moves` | Submit a move fenced by host/source ID, expected ply and FEN. |
 | `GET /v1/moves/{request_id}` | Read the durable move receipt. |
@@ -67,6 +68,19 @@ physical execution; stale positions, conflicting sources and changed retry
 payloads are rejected. Invalid/ambiguous move expressions return 422. A 202
 response means saved/prepared, not delivered: poll the receipt and wait for
 `can_move` before the next human move, including the Stockfish reply.
+
+Reset accepts only `{"host_game_id":"<current host UUID>"}`. Obtain that UUID
+from status and preserve it for every retry of the same reset request; do not
+replace it with a newer game's UUID. A 202 response means reset was requested,
+not completed. Poll status until `busy` is false, `phase` is `idle`, and a new
+`host_game_id` appears. While queued or running, phase is `resetting` and moves
+are disabled. The host finishes the current chess move before returning pieces,
+preserves the played checkpoint in an archive, then clears the Aina binding and
+creates a fresh game identity. Even a board already at standard setup receives
+a fresh identity. Matching retries while resetting observe the same worker;
+requests for the previous UUID after completion are rejected with 409. Missing,
+malformed or extra request fields are rejected with 400. Reset can reference the
+axes and move pieces; it does not bypass an uncertain move or reset transfer.
 
 The board has no piece sensors. After interruption or uncertain delivery,
 inspect and reconcile the saved action through local controls before another

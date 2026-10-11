@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 import chess
 
@@ -201,6 +202,178 @@ def close_controller(controller: GameController):
 
 
 class RemoteHTTPTests(unittest.TestCase):
+    def test_reset_requires_authentication_current_uuid_and_exact_body(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "game.json"
+            controller = controller_for(path, new=True, simulate=True)
+            try:
+                with remote_server(controller) as base:
+                    status = request(base, "/v1/status")[1]
+                    body = {"host_game_id": status["host_game_id"]}
+                    before = path.read_bytes()
+                    for token in (None, "incorrect-token"):
+                        with self.subTest(token=token):
+                            self.assertEqual(request(base, "/v1/session/reset", body,
+                                                     token=token)[0], 401)
+                    self.assertEqual(request(base, "/v1/session/reset", body,
+                                             origin=base)[0], 403)
+                    malformed = ({}, {"host_game_id": None}, {"host_game_id": False},
+                                 {"host_game_id": 1}, {"host_game_id": "not-a-uuid"},
+                                 {"host_game_id": str(uuid4()).replace("-", "")},
+                                 {"host_game_id": "{" + status["host_game_id"] + "}"},
+                                 dict(body, request_id="reset-1"))
+                    for invalid in malformed:
+                        with self.subTest(body=invalid):
+                            self.assertEqual(request(base, "/v1/session/reset", invalid)[0], 400)
+                    code, error = request(base, "/v1/session/reset",
+                                          {"host_game_id": str(uuid4())})
+                    self.assertEqual(code, 409)
+                    self.assertIn("current game", error["error"]["message"])
+                    self.assertEqual(path.read_bytes(), before)
+                    self.assertIsNone(controller._worker)
+                    self.assertIsNone(controller.link)
+            finally:
+                close_controller(controller)
+
+    def test_reset_from_waiting_empty_game_clears_binding_and_rejects_stale_retry(self):
+        for mode in ("external", "human_engine"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory, fake_engine():
+                path = Path(directory) / "game.json"
+                controller = controller_for(path, new=True, simulate=True)
+                try:
+                    with remote_server(controller) as base:
+                        initial = request(base, "/v1/status")[1]
+                        start = dict(start_body(initial), mode=mode, human="white")
+                        self.assertEqual(request(base, "/v1/session/start", start)[0], 202)
+                        waiting_status(base, ply=0)
+                        body = {"host_game_id": initial["host_game_id"]}
+                        code, accepted = request(base, "/v1/session/reset", body)
+                        self.assertEqual(code, 202)
+                        self.assertFalse(accepted["can_move"])
+                        reset = wait_for(lambda: (
+                            value if (value := request(base, "/v1/status")[1])["phase"] == "idle"
+                            and not value["busy"] and value["host_game_id"] != body["host_game_id"]
+                            else None
+                        ))
+                        self.assertIsNone(reset["source_kind"])
+                        self.assertIsNone(reset["source_game_id"])
+                        self.assertEqual(reset["ply"], 0)
+                        self.assertEqual(reset["fen"], chess.Board().fen())
+                        self.assertIsNone(reset["pending"])
+                        self.assertIsNone(reset["error"])
+                        before = path.read_bytes()
+                        self.assertEqual(request(base, "/v1/session/reset", body)[0], 409)
+                        self.assertEqual(path.read_bytes(), before)
+                        self.assertIsNone(controller._worker)
+                finally:
+                    close_controller(controller)
+
+    def test_reset_during_carry_waits_for_commit_and_reuses_reset_worker(self):
+        class TwoHeldCarries(HeldLink):
+            def __init__(self):
+                super().__init__()
+                self.reset_entered = threading.Event()
+                self.reset_release = threading.Event()
+
+            def carry(self, *_arguments):
+                self.carries += 1
+                entered = self.entered if self.carries == 1 else self.reset_entered
+                release = self.release if self.carries == 1 else self.reset_release
+                entered.set()
+                if not release.wait(timeout=5):
+                    raise LinkError("test carry timed out")
+                return SimpleNamespace(command_id=self.carries)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "game.json"
+            link = TwoHeldCarries()
+            controller = controller_for(path, new=True, simulate=True, link=link)
+            try:
+                with remote_server(controller) as base:
+                    initial = request(base, "/v1/status")[1]
+                    request(base, "/v1/session/start", start_body(initial))
+                    move = move_body(waiting_status(base, ply=0))
+                    self.assertEqual(request(base, "/v1/moves", move)[0], 202)
+                    self.assertTrue(link.entered.wait(timeout=5))
+                    game_worker = controller._worker
+                    body = {"host_game_id": initial["host_game_id"]}
+                    code, accepted = request(base, "/v1/session/reset", body)
+                    self.assertEqual(code, 202)
+                    self.assertEqual(accepted["phase"], "resetting")
+                    self.assertFalse(accepted["can_move"])
+                    self.assertEqual(request(base, "/v1/session/reset", body)[0], 202)
+                    self.assertIs(controller._worker, game_worker)
+                    self.assertEqual(link.carries, 1)
+                    before_done = controller.store.load()
+                    self.assertEqual(before_done.moves, [])
+                    self.assertEqual(before_done.pending.phase, "in_flight")
+                    self.assertIsNone(before_done.reset)
+                    self.assertFalse(list(path.parent.glob("game.before-reset-*.json")))
+
+                    link.release.set()
+                    self.assertTrue(link.reset_entered.wait(timeout=5))
+                    reset_worker = controller._worker
+                    self.assertIsNot(reset_worker, game_worker)
+                    resetting = controller.store.load()
+                    self.assertEqual(resetting.moves, ["e2e4"])
+                    self.assertIsNone(resetting.pending)
+                    self.assertIsNotNone(resetting.reset)
+                    self.assertEqual(resetting.remote_receipts[move["request_id"]].state, "committed")
+                    archives = list(path.parent.glob("game.before-reset-*.json"))
+                    self.assertEqual(len(archives), 1)
+                    archived = JsonGameStore(archives[0]).load()
+                    self.assertEqual(archived.moves, ["e2e4"])
+                    self.assertEqual(archived.host_game_id, body["host_game_id"])
+                    code, duplicate = request(base, "/v1/session/reset", body)
+                    self.assertEqual(code, 202)
+                    self.assertEqual(duplicate["phase"], "resetting")
+                    self.assertIs(controller._worker, reset_worker)
+                    self.assertEqual(link.carries, 2)
+                    link.reset_release.set()
+                    wait_for(lambda: not controller.remote_status()["busy"])
+                    reset = request(base, "/v1/status")[1]
+                    self.assertEqual(reset["phase"], "idle")
+                    self.assertEqual(reset["fen"], chess.Board().fen())
+                    self.assertNotEqual(reset["host_game_id"], body["host_game_id"])
+                    self.assertIsNone(reset["source_kind"])
+                    self.assertEqual(controller.store.load().remote_receipts, {})
+            finally:
+                link.release.set()
+                link.reset_release.set()
+                close_controller(controller)
+
+    def test_reset_rejects_uncertain_saved_reset_without_opening_controller(self):
+        class InterruptedReset(SimulatedLink):
+            def carry(self, *_arguments):
+                raise LinkError("simulated interrupted reset")
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "game.json"
+            store = JsonGameStore(path)
+            runner = GameRunner(GameState.new(), store, allow_tight_routes=True)
+            geometry = _route_geometry(_geometry_from_file(FIXTURE), 18.0, 18.0, 0.0)
+            store.save(runner.state)
+            runner.prepare_move("e2e4", geometry)
+            runner.execute_pending(SimulatedLink(), geometry, lambda _action: True)
+            runner.prepare_reset(geometry)
+            with self.assertRaises(LinkError):
+                runner.execute_reset(InterruptedReset(), geometry, lambda _action: True)
+            controller = controller_for(path, new=False, simulate=True)
+            try:
+                with remote_server(controller) as base:
+                    status = request(base, "/v1/status")[1]
+                    self.assertEqual(status["phase"], "reconciliation_required")
+                    before = path.read_bytes()
+                    code, error = request(base, "/v1/session/reset",
+                                          {"host_game_id": status["host_game_id"]})
+                    self.assertEqual(code, 409)
+                    self.assertIn("reconcile", error["error"]["message"])
+                    self.assertEqual(path.read_bytes(), before)
+                    self.assertIsNone(controller._worker)
+                    self.assertIsNone(controller.link)
+            finally:
+                close_controller(controller)
+
     def test_cli_creates_first_checkpoint_with_remote_listener(self):
         # Exercise the exact remote options used by the Linux launcher, with
         # simulated hardware and an initially absent checkpoint directory.
@@ -372,6 +545,13 @@ class RemoteHTTPTests(unittest.TestCase):
                                      "reconciliation_required")
                     second = dict(body, request_id="another-move")
                     self.assertEqual(request(base, "/v1/moves", second)[0], 409)
+                    checkpoint = path.read_bytes()
+                    code, error = request(base, "/v1/session/reset",
+                                          {"host_game_id": status["host_game_id"]})
+                    self.assertEqual(code, 409)
+                    self.assertIn("reconcile", error["error"]["message"])
+                    self.assertEqual(path.read_bytes(), checkpoint)
+                    self.assertIsNone(controller._worker)
                     self.assertEqual(link.carries, 1)
             finally:
                 controller.stop()

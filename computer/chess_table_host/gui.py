@@ -27,7 +27,10 @@ from .api_errors import ApiError
 from .gui_http import GuiHTTPServer
 from .game import GameRunner, GameState, GameStateError, JsonGameStore, MoveDeferred, ReconciliationRequired
 from .checkpoint import RemoteMoveReceipt, STATE_VERSION
-from .remote_contract import MoveRequest, ResolveMoveRequest, SessionStartRequest, request_identifier
+from .remote_contract import (
+    MoveRequest, ResolveMoveRequest, SessionResetRequest, SessionStartRequest,
+    request_identifier,
+)
 from .remote_session import RemoteSession
 from .planner import PlanError
 from .routing import RouteError, RouteGeometry
@@ -375,6 +378,8 @@ class GameController:
             )}
         if pending is not None and pending["phase"] != "ready" and not busy:
             phase = "reconciliation_required"
+        elif busy and (reset_requested or mode is None):
+            phase = "resetting"
         elif state.reset is not None:
             phase = "resetting" if busy else "paused"
         elif state.pending is not None:
@@ -434,6 +439,19 @@ class GameController:
                 self.runner.state = state
                 self._start_worker(self._game_loop, mode=request.mode, human=request.human)
         return self.remote_status()
+
+    def remote_reset(self, body: dict[str, Any]) -> dict[str, Any]:
+        """End the fenced game at a move boundary, then restore standard setup."""
+        request = SessionResetRequest.from_body(body)
+        with self._guard:
+            state = self._load_checkpoint()
+            if state.host_game_id != request.host_game_id:
+                raise ApiError("host_game_id does not match the current game")
+            # A matching retry observes the existing reset worker. Once reset
+            # completes, the fresh UUID rejects retries for the previous game.
+            if self._worker is None or self._mode is not None:
+                self.end_game_and_reset()
+            return self.remote_status()
 
     def remote_resolve_move(self, body: dict[str, Any]) -> dict[str, Any]:
         """Persist legal interpretation under the same guard as move submission."""

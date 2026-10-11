@@ -1,7 +1,7 @@
 """Authenticated loopback API for an external chess-table controller.
 
 This server deliberately has a handler separate from the browser GUI. It
-offers no reconciliation, reset, or raw serial controls. Stockfish is selected
+offers no reconciliation or raw serial controls. Stockfish is selected
 through the typed session-start contract and remains owned by the host.
 """
 
@@ -156,7 +156,8 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = urlsplit(self.path).path
-        if path not in {"/v1/session/start", "/v1/moves", "/v1/moves/resolve", "/v1/stop"}:
+        if path not in {"/v1/session/start", "/v1/session/reset", "/v1/moves",
+                        "/v1/moves/resolve", "/v1/stop"}:
             self._error("not_found", "route not found", HTTPStatus.NOT_FOUND)
             return
         try:
@@ -164,6 +165,8 @@ class RemoteHandler(BaseHTTPRequestHandler):
             controller = self.server.controller
             if path == "/v1/session/start":
                 self._send_json(controller.remote_start(body), HTTPStatus.ACCEPTED)
+            elif path == "/v1/session/reset":
+                self._send_json(controller.remote_reset(body), HTTPStatus.ACCEPTED)
             elif path == "/v1/moves/resolve":
                 self._send_json(controller.remote_resolve_move(body))
             elif path == "/v1/moves":

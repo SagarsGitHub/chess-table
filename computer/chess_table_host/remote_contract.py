@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from http import HTTPStatus
 import re
 from typing import Any
+from uuid import UUID
 
 from .api_errors import ApiError
 from .checkpoint import RemoteMoveReceipt
@@ -50,6 +51,23 @@ class SessionStartRequest:
         return cls(request_identifier(body.get("host_game_id"), "host_game_id"),
                    request_identifier(body.get("request_id"), "request_id"),
                    bounded_text(body.get("source_game_id"), "source_game_id"), mode, human)
+
+
+@dataclass(frozen=True)
+class SessionResetRequest:
+    host_game_id: str
+
+    @classmethod
+    def from_body(cls, value: object) -> "SessionResetRequest":
+        body = _body(value, {"host_game_id"})
+        identifier = body.get("host_game_id")
+        try:
+            valid = isinstance(identifier, str) and str(UUID(identifier)) == identifier
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ApiError("host_game_id must be a canonical UUID", HTTPStatus.BAD_REQUEST)
+        return cls(identifier)
 
 
 @dataclass(frozen=True)
