@@ -1,6 +1,6 @@
 # Serial protocol
 
-The integration firmware uses a versioned, newline-terminated ASCII link at **115200 baud**. The computer must use framed mode and must never infer success from a delay or from a printed waypoint. Each transmitted frame, including its newline, is at most 96 bytes.
+The integration firmware uses a versioned, newline-terminated ASCII link at **115200 baud**. The computer must use framed mode and must never infer success from a delay or from a printed waypoint. Each host request, including its newline, is at most 96 bytes. The host accepts up to 128 bytes before the newline in controller replies so extended capability lists fit.
 
 ## Version 1 frame contract
 

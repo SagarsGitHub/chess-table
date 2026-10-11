@@ -25,6 +25,9 @@ from typing import Callable, Deque, Protocol
 BAUD_RATE = 115200
 PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 96
+# Controller capability lists can exceed the Uno's command-buffer limit.
+# Keep outgoing commands bounded separately from incoming replies.
+MAX_REPLY_BYTES = 128
 MAX_COMMAND_ID = 65535
 MAX_CARRY_WAYPOINTS = 12
 _TOKEN = re.compile(r"^[!-~]+$")
@@ -295,7 +298,7 @@ class SerialLink:
                     self._discard_legacy_line = True
                     continue
                 self._receive.extend(incoming)
-                if len(self._receive) > MAX_FRAME_BYTES:
+                if len(self._receive) > MAX_REPLY_BYTES:
                     self._receive.clear()
                     return self._protocol_failure("serial frame too long")
 

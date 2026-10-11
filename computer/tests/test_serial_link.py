@@ -9,6 +9,7 @@ from chess_table_host.serial_link import (
     LinkBusy,
     LinkDisconnected,
     LinkTimeout,
+    MAX_REPLY_BYTES,
     ProtocolError,
     SerialLink,
 )
@@ -66,6 +67,26 @@ def link_with_script(script, *, first_command_id=1):
 
 
 class SerialLinkTests(unittest.TestCase):
+    def test_extended_hello_capabilities_fit_reply_at_largest_normal_id(self) -> None:
+        caps = "STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,CARRY_OFFSET,OFFSET,SAVE,GEOM,OVER20"
+        reply = f"@65534 DONE HELLO V=1 CAPS={caps}"
+        self.assertGreater(len(reply), 96)
+        link, stream = link_with_script(
+            lambda _data, io: io.feed(f"@65534 ACK\r\n{reply}\r\n"),
+            first_command_id=65534,
+        )
+        self.assertEqual(link.hello().capabilities, frozenset(caps.split(",")))
+        self.assertEqual(stream.written, [b"@65534 HELLO\n"])
+        self.assertFalse(link.physical_state_uncertain)
+
+    def test_oversized_reply_still_fails_closed(self) -> None:
+        link, _ = link_with_script(
+            lambda _data, io: io.feed("@1 ACK\n@1 DONE " + "X" * MAX_REPLY_BYTES + "\n")
+        )
+        with self.assertRaisesRegex(ProtocolError, "serial frame too long"):
+            link.request("HELLO")
+        self.assertTrue(link.physical_state_uncertain)
+
     def test_hello_status_and_generic_request(self) -> None:
         def script(data, stream):
             command_id = data.decode().split()[0]
