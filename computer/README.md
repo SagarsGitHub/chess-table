@@ -16,10 +16,15 @@ Uncertain motion requires inspection and reconciliation before another move.
 | `physical.py` | Expected inventory, transfers and promotion stand-in replay. |
 | `reset_plan.py` | Preflight of the complete return to standard setup. |
 | `checkpoint.py` | Versioned, atomic game and physical-state persistence. |
-| `game.py` | Move/reset execution, commits, and fault reconciliation. |
+| `game.py` | Runner ownership, durable preparation and move/reset execution. |
+| `game_preflight.py` | Complete move/reset preflight, staging and offset-aware routes. |
+| `game_recovery.py` / `game_errors.py` | Inspected reconciliation, cancellation, commits and shared errors. |
 | `protocol_limits.py` / `serial_link.py` / `wire.py` | Uno limits, framed transport, replies, timeouts and occupancy encoding. |
 | `host_config.py` / `link_adapters.py` | Configuration, simulation and durable serial logs. |
-| `play.py` / `gui.py` / `gui_http.py` | CLI and browser entry points using one `GameRunner`. |
+| `play.py` / `gui.py` / `gui_http.py` | CLI, browser startup and HTTP transport using one `GameRunner`. |
+| `gui_controller.py` | Session/serial ownership, local controls and browser state views. |
+| `gui_worker.py` | Single-worker game/reset loops, engine turns and STOP-aware motion. |
+| `gui_remote.py` | Aina request fences, queue tickets and durable receipt/status views. |
 | `host_runtime.py` | Shared connection setup, geometry, engine selection and checkpoint archival. Entry points retain link ownership. |
 | `gui_snapshot.py` | Synchronized checkpoint reads and browser history/action views; never reads the mutable runner. |
 | `remote_http.py` / `remote_contract.py` / `remote_session.py` | Aina authentication, typed requests, source binding and position fences. |

@@ -59,7 +59,7 @@ class OffsetStageTests(unittest.TestCase):
     def prepare_offset_move(self):
         # Exercise the offset fallback when no temporary square-to-square
         # single-blocker stage is available to this move.
-        with patch("chess_table_host.game.plan_tight_knight_move", return_value=None):
+        with patch("chess_table_host.game_preflight.plan_tight_knight_move", return_value=None):
             return self.runner.prepare_move("c3b1", GEOMETRY)
 
     def test_move_offsets_are_strict_and_restored(self) -> None:

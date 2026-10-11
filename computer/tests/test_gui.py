@@ -73,8 +73,9 @@ class GuiTests(unittest.TestCase):
             def quit(self):
                 pass
 
-        with patch("chess_table_host.gui._resolve_engine_path", return_value="fake"), \
-             patch("chess_table_host.gui.chess.engine.SimpleEngine.popen_uci", return_value=Engine()):
+        with patch("chess_table_host.gui_worker._resolve_engine_path", return_value="fake"), \
+             patch("chess_table_host.gui_remote._resolve_engine_path", return_value="fake"), \
+             patch("chess_table_host.gui_worker.chess.engine.SimpleEngine.popen_uci", return_value=Engine()):
             with game_controller() as controller:
                 controller.start("human_engine", human="white")
                 wait_for(lambda: controller.state()["can_move"])
@@ -132,7 +133,7 @@ class GuiTests(unittest.TestCase):
                     self.assertEqual(state["physical_squares"]["d5"], "P")
                     self.assertIn("p", state["physical_parking"])
                     self.assertEqual(state["moves_san"], ["e4", "d5", "exd5"])
-                    with patch("chess_table_host.gui.JsonGameStore.load",
+                    with patch("chess_table_host.gui_snapshot.JsonGameStore.load",
                                side_effect=FileNotFoundError("replacement window")):
                         status, cached = request("/api/state")
                         self.assertEqual(status, 200)
@@ -169,7 +170,7 @@ class GuiTests(unittest.TestCase):
                     ]):
                         self.assertEqual(controller.state()["ply"], 0)
                     controller.store._last_save_at = time.monotonic() - 3.0
-                    with patch("chess_table_host.gui.JsonGameStore.load",
+                    with patch("chess_table_host.gui_snapshot.JsonGameStore.load",
                                side_effect=FileNotFoundError("missing")):
                         status, body = request("/api/state")
                         self.assertEqual(status, 503)

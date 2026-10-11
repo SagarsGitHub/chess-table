@@ -168,7 +168,7 @@ class GameRunnerTests(unittest.TestCase):
     def test_capture_checks_other_parking_slots_after_first_route_fails(self) -> None:
         self.play("e2e4")
         self.play("d7d5")
-        from chess_table_host import game
+        from chess_table_host import game_preflight as game
 
         original_stage = game.plan_cleared_transfer
         original_offset = game.plan_offset_cleared_transfer
@@ -250,7 +250,7 @@ class GameRunnerTests(unittest.TestCase):
         self.play("d7d5")
         before_state = self.runner.state.to_json()
         before_file = self.store.path.read_bytes()
-        from chess_table_host import game
+        from chess_table_host import game_preflight as game
 
         actual_route = game.plan_transfer_route
         failed_attacker_legs = 0

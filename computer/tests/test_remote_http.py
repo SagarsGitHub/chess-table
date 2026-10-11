@@ -173,7 +173,8 @@ class OpeningEngine:
 
 @contextmanager
 def fake_engine():
-    with patch("chess_table_host.gui._resolve_engine_path", return_value="fake"), \
+    with patch("chess_table_host.gui_worker._resolve_engine_path", return_value="fake"), \
+         patch("chess_table_host.gui_remote._resolve_engine_path", return_value="fake"), \
          patch("chess.engine.SimpleEngine.popen_uci", side_effect=lambda _path: OpeningEngine()):
         yield
 
