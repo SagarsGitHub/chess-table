@@ -16,6 +16,7 @@ import chess
 from chess_table_host.game import (
     GameRunner, GameState, GameStateError, JsonGameStore, ReconciliationRequired,
 )
+from chess_table_host.checkpoint import STATE_VERSION
 from chess_table_host.planner import BoardSquare, ParkingInventory, ParkingSlot, Transfer
 from chess_table_host.play import SimulatedLink, _geometry_from_file, main
 from chess_table_host.reset_plan import plan_reset
@@ -305,7 +306,7 @@ class ResetTests(unittest.TestCase):
         legacy.pop("reset")
         restored = GameState.from_json(legacy)
         self.assertIsNone(restored.reset)
-        self.assertEqual(restored.to_json()["version"], 4)
+        self.assertEqual(restored.to_json()["version"], STATE_VERSION)
 
     def test_pending_move_cannot_start_reset(self) -> None:
         self.runner.prepare_move("e2e4", GEOMETRY)

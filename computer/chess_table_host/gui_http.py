@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from urllib.parse import urlsplit
 
+from .api_errors import ApiError
 from .game import GameStateError
 from .planner import PlanError
 from .routing import RouteError
@@ -19,14 +20,6 @@ if TYPE_CHECKING:
 
 
 STATIC_DIR = Path(__file__).with_name("gui_static")
-
-
-class ApiError(ValueError):
-    """A controller refusal with an HTTP status suitable for the browser."""
-
-    def __init__(self, message: str, status: HTTPStatus = HTTPStatus.CONFLICT):
-        super().__init__(message)
-        self.status = status
 
 
 class GuiHTTPServer(ThreadingHTTPServer):

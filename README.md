@@ -18,6 +18,10 @@ python3 -m venv .venv
 
 For the browser game, follow the [GUI runbook](docs/GUI_GAME.md). For CLI smoke tests, Stockfish self-play, USB attachment, and recovery, use the [physical test runbook](docs/STAGE4_TEST_GAME.md). A new game needs a fresh checkpoint filename; `--resume` uses an existing one. The host performs `HOME` or `REF`, reads live `GEOM`, and sends `MAP`; it does not need a separate Serial Monitor setup step.
 
+For Linux startup and authenticated Aina control, use `Start-ChessTable.sh`
+and the [Aina setup guide](docs/REMOTE_AINA.md). The launcher starts the host;
+game play remains stopped until started through the GUI or Aina.
+
 ## Repository map
 
 | Path | Purpose |

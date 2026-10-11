@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 import sys
 import threading
 import time
@@ -22,8 +23,12 @@ from typing import Any
 import chess
 import chess.engine
 
-from .gui_http import ApiError, GuiHTTPServer
+from .api_errors import ApiError
+from .gui_http import GuiHTTPServer
 from .game import GameRunner, GameState, GameStateError, JsonGameStore, MoveDeferred, ReconciliationRequired
+from .checkpoint import RemoteMoveReceipt, STATE_VERSION
+from .remote_contract import MoveRequest, ResolveMoveRequest, SessionStartRequest, request_identifier
+from .remote_session import RemoteSession
 from .planner import PlanError
 from .routing import RouteError, RouteGeometry
 from .serial_link import LinkError
@@ -32,10 +37,20 @@ from .play import (
     _feasible_engine_moves, _geometry_from_file, _load_config,
     _resolve_engine_path, _route_geometry,
 )
+from .remote_http import RemoteHTTPServer, read_remote_token
 from .session_lock import SessionLock
 
 
-MODES = frozenset({"human_engine", "self_play", "manual_both"})
+MODES = frozenset({"human_engine", "self_play", "manual_both", "external"})
+
+
+@dataclass
+class RemoteMoveTicket:
+    receipt: RemoteMoveReceipt
+    ready: threading.Event = field(default_factory=threading.Event)
+    error: Exception | None = None
+    claimed: bool = False
+    cancelled: bool = False
 
 
 class SynchronizedGameStore(JsonGameStore):
@@ -129,6 +144,14 @@ class GameController:
                 self.store.save(state)
             else:
                 state = self.store.load()
+                # Persist migrated metadata before any remote client can read it;
+                # physical inventory and plans remain unchanged.
+                if state_path.exists():
+                    import json
+                    with state_path.open("r", encoding="utf-8") as handle:
+                        stored_version = json.load(handle).get("version", 0)
+                    if stored_version < STATE_VERSION:
+                        self.store.save(state)
             self.runner = GameRunner(state, self.store, allow_tight_routes=allow_tight_routes)
         except BaseException:
             self.lock.release()
@@ -146,12 +169,13 @@ class GameController:
         self.full_home = full_home
         self.link = None
         self.geometry: RouteGeometry | None = None
-        self._guard = threading.Lock()
+        self._guard = threading.RLock()
         self._worker: threading.Thread | None = None
         self._interrupt_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._reset_requested = threading.Event()
-        self._moves: Queue[str] = Queue(maxsize=1)
+        self._moves: Queue[str | RemoteMoveTicket] = Queue(maxsize=1)
+        self._remote_ticket: RemoteMoveTicket | None = None
         self._mode: str | None = None
         self._human = "white"
         self._activity: str | None = None
@@ -284,8 +308,10 @@ class GameController:
             phase = "error"
         else:
             phase = "idle"
-        can_move = not cached and phase == "human_turn" and state.pending is None and state.reset is None
-        can_start = not cached and not busy and not uncertain and state.reset is None and not game_over
+        can_move = (not cached and phase == "human_turn" and state.pending is None and
+                    state.reset is None and state.source_kind is None)
+        can_start = (not cached and not busy and not uncertain and state.reset is None and
+                     not game_over and state.source_kind is None)
         if cached:
             status = "Checkpoint update in progress; waiting for the saved file."
         return {
@@ -320,6 +346,160 @@ class GameController:
             "checkpoint_cached": cached,
         }
 
+    @staticmethod
+    def _receipt_view(receipt: RemoteMoveReceipt, state: GameState, busy: bool) -> dict[str, Any]:
+        value = {"schema_version": 1, **receipt.to_json()}
+        # The checkpoint keeps the last physical phase. If the worker is gone
+        # while that phase is uncertain, expose reconciliation_required even
+        # after a process restart; no separate volatile flag is needed.
+        if (state.pending is not None and
+                state.pending.remote_request_id == receipt.request_id and
+                state.pending.phase != "ready" and not busy):
+            value["state"] = "reconciliation_required"
+        return value
+
+    def remote_status(self) -> dict[str, Any]:
+        state, cached = self.store.read_snapshot()
+        with self._guard:
+            busy = self._worker is not None
+            mode = self._mode
+            waiting = self._waiting
+            stopped = self._stop.is_set()
+            reset_requested = self._reset_requested.is_set()
+            error = self._error
+        pending = _active_action(state)
+        if pending is not None:
+            pending = {key: pending[key] for key in (
+                "kind", "uci", "phase", "next_action", "action_number",
+                "total_actions", "action",
+            )}
+        if pending is not None and pending["phase"] != "ready" and not busy:
+            phase = "reconciliation_required"
+        elif state.reset is not None:
+            phase = "resetting" if busy else "paused"
+        elif state.pending is not None:
+            phase = "moving" if busy else "paused"
+        elif busy and waiting and mode in {"external", "human_engine"}:
+            phase = "waiting_for_move"
+        elif busy and self._activity == "engine_thinking":
+            phase = "engine_thinking"
+        elif busy:
+            phase = "moving"
+        elif state.board().is_game_over(claim_draw=True):
+            phase = "game_over"
+        elif error:
+            phase = "error"
+        else:
+            phase = "idle"
+        return {
+            "schema_version": 1,
+            "host_game_id": state.host_game_id,
+            "source_kind": state.source_kind,
+            "source_game_id": state.source_game_id,
+            "mode": state.remote_mode if state.source_kind else mode,
+            "human": state.remote_human if state.source_kind else self._human,
+            "ply": len(state.moves),
+            "last_move_uci": state.moves[-1] if state.moves else None,
+            "fen": state.board_fen,
+            "phase": phase,
+            "can_move": bool(not cached and busy and waiting and mode in {"external", "human_engine"} and
+                             state.pending is None and state.reset is None and
+                             not stopped and not reset_requested),
+            "pending": pending,
+            "busy": busy,
+            "checkpoint_cached": cached,
+            # Worker errors can contain private filesystem or serial paths.
+            "error": "host operation failed" if error is not None else None,
+        }
+
+    def remote_start(self, body: dict[str, Any]) -> dict[str, Any]:
+        request = SessionStartRequest.from_body(body)
+        if request.mode == "human_engine":
+            try:
+                _resolve_engine_path(self.stockfish_path)
+            except GameStateError as exc:
+                raise ApiError("Stockfish unavailable; check host engine configuration",
+                               HTTPStatus.SERVICE_UNAVAILABLE) from exc
+        with self._guard:
+            state = self._load_checkpoint()
+            if RemoteSession.bind(state, request, busy=self._worker is not None):
+                self.store.save(state)
+                self.runner.state = state
+            if self._worker is not None:
+                if self._mode != request.mode or self._human != request.human:
+                    raise ApiError("another game worker is already running")
+            elif (state.reset is None and
+                  (state.pending is None or state.pending.phase == "ready") and
+                  not state.board().is_game_over(claim_draw=True)):
+                self.runner.state = state
+                self._start_worker(self._game_loop, mode=request.mode, human=request.human)
+        return self.remote_status()
+
+    def remote_resolve_move(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Persist legal interpretation under the same guard as move submission."""
+        request = ResolveMoveRequest.from_body(body)
+        with self._guard:
+            state = self._load_checkpoint()
+            resolution, changed = RemoteSession.resolve(
+                state, request, can_move=self.remote_status()["can_move"],
+            )
+            if changed:
+                self.store.save(state)
+                self.runner.state = state
+            return resolution.payload
+
+    def remote_receipt(self, request_id: str) -> dict[str, Any]:
+        request_id = request_identifier(request_id, "request_id")
+        state = self._load_checkpoint()
+        receipt = state.remote_receipts.get(request_id)
+        if receipt is None:
+            raise ApiError("move request was never prepared", HTTPStatus.NOT_FOUND)
+        with self._guard:
+            busy = self._worker is not None
+        return self._receipt_view(receipt, state, busy)
+
+    def remote_submit_move(self, body: dict[str, Any]) -> dict[str, Any]:
+        request = MoveRequest.from_body(body)
+        request_id = request.request_id
+        receipt = request.receipt()
+        with self._guard:
+            state = self._load_checkpoint()
+            existing = RemoteSession.existing_receipt(state, request)
+            if existing is not None:
+                return self._receipt_view(existing, state, self._worker is not None)
+            ticket = self._remote_ticket
+            if ticket is not None and ticket.receipt.request_id == request_id:
+                if not request.matches(ticket.receipt):
+                    raise ApiError("request_id was already used for another move")
+            else:
+                if (state.source_kind != "aina" or self._mode not in {"external", "human_engine"} or
+                        self._worker is None or not self._waiting or self._stop.is_set() or
+                        self._reset_requested.is_set() or state.pending is not None or
+                        state.reset is not None or self._remote_ticket is not None):
+                    raise ApiError("remote game is not waiting for a move")
+                RemoteSession.check_position(state, request)
+                ticket = RemoteMoveTicket(receipt)
+                self._remote_ticket = ticket
+                self._moves.put_nowait(ticket)
+                self._waiting = False
+                self._activity = "moving"
+                self._status = f"Planning {request.uci}..."
+        assert ticket is not None
+        if not ticket.ready.wait(timeout=60):
+            try:
+                return self.remote_receipt(request_id)
+            except ApiError as exc:
+                if exc.status != HTTPStatus.NOT_FOUND:
+                    raise
+            raise ApiError("preparation still pending; retry the same request_id",
+                           HTTPStatus.GATEWAY_TIMEOUT)
+        try:
+            return self.remote_receipt(request_id)
+        except ApiError as exc:
+            if exc.status != HTTPStatus.NOT_FOUND or ticket.error is None:
+                raise
+            raise ticket.error
+
     def _start_worker(self, task, *, mode: str | None = None, human: str = "white",
                       reset_after: bool = False) -> None:
         """Give a single background worker ownership of the game and link."""
@@ -331,6 +511,7 @@ class GameController:
             if reset_after:
                 self._reset_requested.set()
             self._moves = Queue(maxsize=1)
+            self._remote_ticket = None
             self._mode = mode
             self._human = human
             self._activity = "starting"
@@ -344,9 +525,13 @@ class GameController:
     def start(self, mode: str, human: str = "white") -> None:
         if not isinstance(mode, str) or mode not in MODES:
             raise ApiError("mode must be human_engine, self_play, or manual_both", HTTPStatus.BAD_REQUEST)
+        if mode == "external":
+            raise ApiError("external games start through the remote session API", HTTPStatus.BAD_REQUEST)
         if not isinstance(human, str) or human not in {"white", "black"}:
             raise ApiError("human must be white or black", HTTPStatus.BAD_REQUEST)
         state = self._load_checkpoint()
+        if state.source_kind is not None:
+            raise ApiError("remote-bound games resume through the remote session API")
         if state.reset is not None:
             raise ApiError("finish or reconcile the board reset first")
         if state.pending is not None and state.pending.phase != "ready":
@@ -360,15 +545,18 @@ class GameController:
             raise ApiError("uci must be a string", HTTPStatus.BAD_REQUEST)
         uci = uci.strip().lower()
         with self._guard:
-            if self._worker is None or not self._waiting or self._mode == "self_play":
+            state = self._load_checkpoint()
+            if state.source_kind is not None:
+                raise ApiError("remote-bound games accept moves through the remote session API")
+            if self._worker is None or not self._waiting or self._mode in {"self_play", "external"}:
                 raise ApiError("the game is not waiting for a human move")
             try:
-                self._load_checkpoint().board().parse_uci(uci)
+                state.board().parse_uci(uci)
             except ValueError as exc:
                 raise ApiError(f"illegal move: {uci}", HTTPStatus.UNPROCESSABLE_ENTITY) from exc
             try:
                 self._moves.put_nowait(uci)
-            except Exception as exc:
+            except Full as exc:
                 raise ApiError("a move is already queued") from exc
             self._waiting = False
             self._activity = "moving"
@@ -382,6 +570,11 @@ class GameController:
             already_stopping = self._stop.is_set()
             self._stop.set()
             self._reset_requested.clear()
+            if self._remote_ticket is not None and not self._remote_ticket.claimed:
+                self._remote_ticket.cancelled = True
+                self._remote_ticket.error = ApiError("move was stopped before preparation")
+                self._remote_ticket.ready.set()
+                self._remote_ticket = None
             self._status = "Pausing after the current transfer..."
             self._waiting = False
             if not already_stopping and not self.simulate and self.link is not None:
@@ -512,7 +705,23 @@ class GameController:
                 self.link = None
                 self.geometry = None
         finally:
+            if self._stop.is_set():
+                # STOP can arrive while route preflight is still running. A
+                # successful preflight saves a pending move before returning;
+                # remove that unstarted move so a later session resume cannot
+                # turn a stopped request into a physical carry.
+                try:
+                    self.runner.cancel_unstarted_remote_move()
+                except OSError as exc:
+                    with self._guard:
+                        self._error = str(exc)
+                        self._status = "Could not save the stopped move; inspect the checkpoint."
+                        self._activity = "error"
             with self._guard:
+                if self._remote_ticket is not None and not self._remote_ticket.ready.is_set():
+                    self._remote_ticket.error = ApiError("worker ended before move preparation")
+                    self._remote_ticket.ready.set()
+                    self._remote_ticket = None
                 self._waiting = False
                 if completed and task == self._game_loop and self._reset_requested.is_set():
                     self._reset_requested.clear()
@@ -584,21 +793,54 @@ class GameController:
                 raise GameStateError("no legal engine move passes route preflight")
             result = engine.play(board, chess.engine.Limit(time=self.engine_time), root_moves=feasible)
             uci = result.move.uci()
+            selected = uci
         else:
             self._set_activity("human_turn", "Enter a move; leave the physical pieces in place.")
             while not self._stop.is_set() and not self._reset_requested.is_set():
                 try:
-                    uci = self._moves.get(timeout=0.2)
+                    selected = self._moves.get(timeout=0.2)
                     break
                 except Empty:
                     continue
             else:
                 return None
 
+            if isinstance(selected, RemoteMoveTicket):
+                with self._guard:
+                    selected.claimed = True
+                if selected.cancelled:
+                    return None
+                uci = selected.receipt.uci
+            else:
+                uci = selected
+
         if self._stop.is_set() or self._reset_requested.is_set():
+            if isinstance(selected, RemoteMoveTicket):
+                selected.error = ApiError("move was stopped before preparation")
+                selected.ready.set()
+                with self._guard:
+                    if self._remote_ticket is selected:
+                        self._remote_ticket = None
             return None
         self._set_activity("moving", f"Preflighting {uci}...")
-        self.runner.prepare_move(uci, geometry)
+        try:
+            self.runner.prepare_move(
+                uci, geometry,
+                remote_receipt=selected.receipt if isinstance(selected, RemoteMoveTicket) else None,
+            )
+        except BaseException as exc:
+            if isinstance(selected, RemoteMoveTicket):
+                selected.error = exc
+                selected.ready.set()
+                with self._guard:
+                    if self._remote_ticket is selected:
+                        self._remote_ticket = None
+            raise
+        if isinstance(selected, RemoteMoveTicket):
+            selected.ready.set()
+            with self._guard:
+                if self._remote_ticket is selected:
+                    self._remote_ticket = None
         return uci
 
     def _game_loop(self) -> None:
@@ -669,6 +911,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--home", action="store_true", help="full HOME instead of saved-geometry REF")
     parser.add_argument("--serial-log", type=Path)
     parser.add_argument("--http-port", type=int, default=8765, help="localhost browser port")
+    parser.add_argument("--remote-token-file", type=Path,
+                        help="enable the authenticated loopback remote API with this token file")
+    parser.add_argument("--remote-http-port", type=int, default=8766,
+                        help="loopback remote API port when --remote-token-file is supplied")
     args = parser.parse_args(argv)
     try:
         config = _load_config(args.config)
@@ -680,6 +926,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("physical play reads live GEOM; omit --geometry-file")
     if not 0 < args.http_port < 65536:
         parser.error("--http-port must be in 1..65535")
+    if not 0 < args.remote_http_port < 65536:
+        parser.error("--remote-http-port must be in 1..65535")
+    if args.remote_token_file and args.remote_http_port == args.http_port:
+        parser.error("--remote-http-port must differ from --http-port")
+    try:
+        remote_token = read_remote_token(args.remote_token_file) if args.remote_token_file else None
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.engine_time <= 0:
         parser.error("--engine-time must be positive")
     moving = args.moving_diameter if args.moving_diameter is not None else config["moving_diameter_mm"]
@@ -700,8 +954,17 @@ def main(argv: list[str] | None = None) -> int:
         )
     except (GameStateError, OSError, RuntimeError) as exc:
         parser.error(str(exc))
+    remote_server = None
+    remote_thread = None
     try:
         with GuiHTTPServer(("127.0.0.1", args.http_port), controller) as server:
+            if remote_token is not None:
+                remote_server = RemoteHTTPServer(
+                    ("127.0.0.1", args.remote_http_port), controller, remote_token,
+                )
+                remote_thread = threading.Thread(target=remote_server.serve_forever, daemon=True)
+                remote_thread.start()
+                print(f"Chess table remote API: http://127.0.0.1:{args.remote_http_port}/v1/status")
             print(f"Chess table GUI: http://localhost:{server.server_port}/")
             print("Simulation only; no hardware will move." if args.simulate else
                   f"Physical Uno port: {serial_port}; keep the power cutoff reachable.")
@@ -714,6 +977,11 @@ def main(argv: list[str] | None = None) -> int:
             worker.join()
         return 0
     finally:
+        if remote_server is not None:
+            remote_server.shutdown()
+            remote_server.server_close()
+        if remote_thread is not None:
+            remote_thread.join(timeout=5)
         controller.close()
     return 0
 

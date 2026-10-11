@@ -15,6 +15,7 @@ import chess
 
 from .checkpoint import (
     PROMOTION_RULE, STATE_VERSION, GameState, JsonGameStore, PendingMove, PendingReset,
+    RemoteMoveReceipt,
 )
 from .game_errors import GameStateError
 from .physical import (
@@ -136,12 +137,27 @@ class GameRunner:
             parking_after=ParkingInventory(tuple(slots)),
         )
 
-    def prepare_move(self, uci: str, geometry: RouteGeometry) -> MovePlan:
+    def prepare_move(
+        self, uci: str, geometry: RouteGeometry,
+        *, remote_receipt: RemoteMoveReceipt | None = None,
+    ) -> MovePlan:
         plan = self.preflight_move(uci, geometry)
+        if remote_receipt is not None:
+            if (self.state.source_kind != "aina" or
+                    self.state.source_game_id != remote_receipt.source_game_id or
+                    self.state.host_game_id != remote_receipt.host_game_id or
+                    len(self.state.moves) != remote_receipt.expected_ply or
+                    self.state.board_fen != remote_receipt.expected_fen or
+                    plan.uci != remote_receipt.uci or
+                    remote_receipt.request_id in self.state.remote_receipts):
+                raise GameStateError("remote move receipt differs from the current game")
         self.state.pending = PendingMove(
             uci=plan.uci, fen_after=plan.fen_after,
             parking_after=plan.parking_after, actions=plan.actions,
+            remote_request_id=remote_receipt.request_id if remote_receipt else None,
         )
+        if remote_receipt is not None:
+            self.state.remote_receipts[remote_receipt.request_id] = remote_receipt
         self.state.events.append({"event": "move_prepared", "uci": plan.uci})
         self.store.save(self.state)
         return plan
@@ -197,6 +213,8 @@ class GameRunner:
                 # Save uncertainty before CARRY: a disconnect after this point
                 # must never be mistaken for a transfer that was not started.
                 pending.phase = "in_flight"
+                if pending.remote_request_id is not None:
+                    self.state.remote_receipts[pending.remote_request_id].state = "in_flight"
                 pending.active_route = wire
                 self.state.events.append({
                     "event": "carry_started", "uci": pending.uci,
@@ -231,6 +249,8 @@ class GameRunner:
             })
             pending.next_action += 1
             pending.phase = "ready"
+            if pending.remote_request_id is not None:
+                self.state.remote_receipts[pending.remote_request_id].state = "prepared"
             pending.active_route = None
             self._commit_if_complete()
             self.store.save(self.state)
@@ -353,6 +373,8 @@ class GameRunner:
             "outcome": outcome,
         })
         pending.phase = "ready"
+        if pending.remote_request_id is not None:
+            self.state.remote_receipts[pending.remote_request_id].state = "prepared"
         pending.active_route = None
         self._commit_if_complete()
         self.store.save(self.state)
@@ -362,11 +384,29 @@ class GameRunner:
         if self.state.pending is None:
             raise GameStateError("no pending move")
         uci = self.state.pending.uci
+        if self.state.pending.remote_request_id is not None:
+            self.state.remote_receipts[self.state.pending.remote_request_id].state = "aborted"
         self.state.physical_squares = self.state.expected_physical_squares()
         self.state.physical_parking = list(self.state.committed_parking.slots)
         self.state.pending = None
         self.state.events.append({"event": "move_aborted_after_manual_restore", "uci": uci})
         self.store.save(self.state)
+
+    def cancel_unstarted_remote_move(self) -> bool:
+        """Tombstone a remote move only when no physical action has begun."""
+        pending = self.state.pending
+        if (pending is None or pending.remote_request_id is None or
+                pending.next_action != 0 or pending.phase != "ready"):
+            return False
+        self.state.remote_receipts[pending.remote_request_id].state = "aborted"
+        self.state.events.append({
+            "event": "remote_move_cancelled_before_motion",
+            "uci": pending.uci,
+            "request_id": pending.remote_request_id,
+        })
+        self.state.pending = None
+        self.store.save(self.state)
+        return True
 
     def _commit_if_complete(self) -> None:
         pending = self.state.pending
@@ -382,5 +422,7 @@ class GameRunner:
         self.state.board_fen = pending.fen_after
         self.state.committed_parking = pending.parking_after
         self.state.moves.append(pending.uci)
+        if pending.remote_request_id is not None:
+            self.state.remote_receipts[pending.remote_request_id].state = "committed"
         self.state.events.append({"event": "move_committed", "uci": pending.uci})
         self.state.pending = None

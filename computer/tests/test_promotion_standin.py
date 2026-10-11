@@ -16,6 +16,7 @@ import chess
 from chess_table_host.game import (
     GameRunner, GameState, GameStateError, JsonGameStore, ReconciliationRequired,
 )
+from chess_table_host.checkpoint import STATE_VERSION
 from chess_table_host.planner import BoardSquare, ManualReplacement, ParkingInventory, ParkingSlot, Transfer
 from chess_table_host.routing import RouteGeometry
 
@@ -175,7 +176,7 @@ class PromotionStandinTests(unittest.TestCase):
         legacy.pop("promotion_rule")
         restored = GameState.from_json(legacy)
         self.assertEqual(restored.to_json()["promotion_rule"], "pawn_stand_in")
-        self.assertEqual(restored.to_json()["version"], 4)
+        self.assertEqual(restored.to_json()["version"], STATE_VERSION)
 
     def test_old_promoted_checkpoint_requires_reconciliation(self) -> None:
         runner = self.runner_at("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
