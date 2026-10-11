@@ -20,8 +20,10 @@ Uncertain outcomes pause play for physical inspection and reconciliation.
 The [module map](../computer/README.md#code-map) lists implementation ownership.
 `physical.py` and `reset_plan.py` plan without sending motor commands;
 `game.py` executes, checkpoints and reconciles. `gui.py` retains single-worker
-and link ownership. Aina's separate loopback adapter uses typed requests and
-session policy in `remote_contract.py` and `remote_session.py`; every move still
+and link ownership. `host_runtime.py` shares connection setup and engine/geometry
+helpers between entry points; `gui_snapshot.py` isolates synchronized checkpoint
+reads and browser presentation. Aina's separate loopback adapter uses typed
+requests and session policy in `remote_contract.py` and `remote_session.py`; every move still
 uses the same `GameRunner`. See the [local API contract](REMOTE_AINA.md#local-api-contract).
 
 ## Operation order

@@ -8,11 +8,7 @@ does not certify the motor, magnet, or piece placement.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
-import json
-import os
 from pathlib import Path
-import shutil
 import sys
 from typing import Callable
 
@@ -24,13 +20,18 @@ from .game import (
     ReconciliationRequired,
 )
 from .planner import (
-    Action, BoardSquare, ManualReplacement, ParkingSlot, PieceOffset, PlanError,
+    Action, BoardSquare, ManualReplacement, ParkingSlot, PieceOffset,
     RookOffset, Transfer,
 )
 from .routing import RouteError, RouteGeometry
-from .serial_link import ControllerGeometry, LinkError, open_serial
+from .serial_link import LinkError, open_serial
 from .session_lock import SessionLock
 from .host_config import DEFAULT_CONFIG, _load_config
+from .host_runtime import (
+    connect_physical, _archive_checkpoint, _feasible_engine_moves, _geometry_from_file,
+    _resolve_engine_path, _route_geometry,
+)
+# Retain adapter exports used by existing callers and transport tests.
 from .link_adapters import LoggedSerialStream, SimulatedLink
 
 
@@ -184,110 +185,16 @@ def _reconcile_at_start(runner: GameRunner, *, automatic: bool = False) -> bool:
     return _reconcile_move_at_start(runner, automatic=automatic)
 
 
-def _geometry_from_file(path: Path) -> ControllerGeometry:
-    with path.open("r", encoding="utf-8") as handle:
-        value = json.load(handle)
-    return ControllerGeometry(
-        x_travel_mm=float(value["x_travel_mm"]),
-        y_travel_mm=float(value["y_travel_mm"]),
-        board_origin_x_mm=float(value["board_origin_x_mm"]),
-        board_origin_y_mm=float(value["board_origin_y_mm"]),
-        square_pitch_mm=float(value["square_pitch_mm"]),
-        end_inset_mm=float(value["end_inset_mm"]),
-        pulses_per_mm=float(value["pulses_per_mm"]),
-    )
-
-
-def _route_geometry(
-    controller: ControllerGeometry, moving: float, standing: float, margin: float
-) -> RouteGeometry:
-    return RouteGeometry(
-        controller.square_pitch_mm, moving, standing, margin,
-        x_travel_mm=controller.x_travel_mm,
-        y_travel_mm=controller.y_travel_mm,
-        end_inset_mm=controller.end_inset_mm,
-        pulses_per_mm=controller.pulses_per_mm,
-        board_origin_x_mm=controller.board_origin_x_mm,
-        board_origin_y_mm=controller.board_origin_y_mm,
-    )
-
-
 def _connect_physical(
     port: str, *, full_home: bool, serial_log: Path,
     on_open: Callable[[object], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
 ):
-    link = open_serial(port)
-    try:
-        link.stream = LoggedSerialStream(link.stream, serial_log)
-        if on_open is not None:
-            on_open(link)
-        print("Serial transcript:", serial_log)
-        hello = link.hello()
-        required = {
-            "STATUS", "HOME", "REF", "MAP", "CARRY", "CARRY_OFFSET",
-            "CARRY_DIAG", "GEOM", "OFFSET", "OVER20",
-        }
-        if not required.issubset(hello.capabilities):
-            raise GameStateError(f"controller lacks {sorted(required - hello.capabilities)}")
-        status = link.status()
-        print(f"Controller: V={hello.version}, REF={int(status.referenced)}, "
-              f"SAVED={int(status.saved_geometry)}")
-        if cancelled is not None and cancelled():
-            raise MoveDeferred("connection stopped before HOME or REF")
-        if full_home or not status.saved_geometry:
-            print("Running full HOME; watch both axes and keep the power cutoff reachable.")
-            link.home()
-        else:
-            print("Running saved-geometry REF; watch both axes toward MIN.")
-            link.reference()
-        controller = link.geometry()
-        print("Live GEOM:", controller)
-        return link, controller
-    except BaseException:
-        link.close()
-        raise
-
-
-def _feasible_engine_moves(runner: GameRunner, geometry: RouteGeometry) -> list[chess.Move]:
-    board = runner.state.board()
-    feasible: list[chess.Move] = []
-    for move in board.legal_moves:
-        try:
-            runner.preflight_move(move.uci(), geometry)
-        except (GameStateError, PlanError, RouteError):
-            continue
-        feasible.append(move)
-    return feasible
-
-
-def _resolve_engine_path(configured: str | None) -> str:
-    """Find a downloaded Stockfish binary without assuming an OS-specific name."""
-    default = Path.home() / "Documents" / "Stockfish"
-    choice = Path(configured).expanduser() if configured else default
-    if configured and not choice.exists() and len(choice.parts) == 1:
-        on_path = shutil.which(configured)
-        if on_path:
-            return on_path
-    if choice.is_file():
-        return str(choice)
-    if choice.is_dir():
-        for name in ("stockfish", "stockfish.exe", "stockfish-windows-x86-64-universal.exe"):
-            candidate = choice / name
-            if candidate.is_file():
-                return str(candidate)
-        candidates = sorted(
-            path for path in choice.rglob("*")
-            if path.is_file() and path.name.lower().startswith("stockfish")
-            and path.suffix.lower() in {"", ".exe"}
-        )
-        if len(candidates) == 1:
-            return str(candidates[0])
-        if len(candidates) > 1:
-            raise GameStateError(
-                f"several Stockfish executables found in {choice}; select one with --engine"
-            )
-    raise GameStateError(f"Stockfish executable not found at {choice}; use --engine PATH")
+    """CLI adapter retaining its serial factory for callers and transport tests."""
+    return connect_physical(
+        port, full_home=full_home, serial_log=serial_log,
+        on_open=on_open, cancelled=cancelled, link_factory=open_serial,
+    )
 
 
 def _print_plan(runner: GameRunner, uci: str, geometry: RouteGeometry) -> None:
@@ -426,26 +333,6 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
     finally:
         if engine is not None:
             engine.quit()
-
-
-def _archive_checkpoint(path: Path) -> Path:
-    """Preserve the exact played checkpoint bytes before reset modifies it."""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    for attempt in range(1000):
-        suffix = "" if attempt == 0 else f"-{attempt:03d}"
-        archive = path.with_name(f"{path.stem}.before-reset-{stamp}{suffix}{path.suffix}")
-        try:
-            with path.open("rb") as original, archive.open("xb") as copy:
-                shutil.copyfileobj(original, copy)
-                copy.flush()
-                os.fsync(copy.fileno())
-            return archive
-        except FileExistsError:
-            continue
-        except BaseException:
-            archive.unlink(missing_ok=True)
-            raise
-    raise GameStateError("could not find a free checkpoint archive filename")
 
 
 def _run_reset(args: argparse.Namespace, runner: GameRunner, link, geometry: RouteGeometry) -> None:

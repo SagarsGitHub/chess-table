@@ -20,6 +20,8 @@ Uncertain motion requires inspection and reconciliation before another move.
 | `protocol_limits.py` / `serial_link.py` / `wire.py` | Uno limits, framed transport, replies, timeouts and occupancy encoding. |
 | `host_config.py` / `link_adapters.py` | Configuration, simulation and durable serial logs. |
 | `play.py` / `gui.py` / `gui_http.py` | CLI and browser entry points using one `GameRunner`. |
+| `host_runtime.py` | Shared connection setup, geometry, engine selection and checkpoint archival. Entry points retain link ownership. |
+| `gui_snapshot.py` | Synchronized checkpoint reads and browser history/action views; never reads the mutable runner. |
 | `remote_http.py` / `remote_contract.py` / `remote_session.py` | Aina authentication, typed requests, source binding and position fences. |
 | `api_errors.py` | Structured refusals shared by HTTP adapters. |
 | `move_expression.py` | Speech cleanup and legal expression resolution. |
