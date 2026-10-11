@@ -51,6 +51,37 @@ class PlayConfigurationTests(unittest.TestCase):
         self.assertFalse(firmware.referenced)
         self.assertTrue(firmware.closed)
 
+    def test_firmware_without_overshoot_capability_is_rejected_before_homing(self) -> None:
+        class UncompensatedFirmware:
+            def __init__(self) -> None:
+                self.stream = io.BytesIO()
+                self.homed = False
+
+            def hello(self):
+                return SimpleNamespace(
+                    version=1,
+                    capabilities={
+                        "STATUS", "HOME", "REF", "MAP", "CARRY", "CARRY_OFFSET",
+                        "CARRY_DIAG", "GEOM", "OFFSET",
+                    },
+                )
+
+            def home(self):
+                self.homed = True
+
+            def close(self):
+                self.stream.close()
+
+        firmware = UncompensatedFirmware()
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch("chess_table_host.play.open_serial", return_value=firmware):
+                with self.assertRaisesRegex(GameStateError, "OVER20"):
+                    _connect_physical(
+                        "COM3", full_home=True,
+                        serial_log=Path(temporary) / "serial.jsonl",
+                    )
+        self.assertFalse(firmware.homed)
+
     def test_self_play_finishes_checkmate_without_human_move_or_confirmation_prompts(self) -> None:
         planned = ("f2f3", "e7e5", "g2g4", "d8h4")
 
@@ -123,7 +154,7 @@ class PlayConfigurationTests(unittest.TestCase):
     def test_checked_in_defaults_use_com3_and_stockfish_folder(self) -> None:
         config = _load_config(DEFAULT_CONFIG)
         self.assertEqual(config["serial_port"], "COM3")
-        self.assertEqual(config["stockfish_path"], "~/Documents/stockfish")
+        self.assertEqual(config["stockfish_path"], "~/Documents/Stockfish")
         self.assertEqual(config["moving_diameter_mm"], 18)
         self.assertEqual(config["standing_diameter_mm"], 18)
         self.assertIs(config["allow_tight_routes"], True)
@@ -142,14 +173,16 @@ class PlayConfigurationTests(unittest.TestCase):
             ):
                 result = main(["--new", "--state", str(state), "--moves", "g1f3"])
             self.assertEqual(result, 0)
-            self.assertIn("CLEARANCE OVERRIDE", output.getvalue())
+            self.assertNotIn("CLEARANCE OVERRIDE", output.getvalue())
+            self.assertIn("knight_stage", output.getvalue())
+            self.assertIn("knight_restore", output.getvalue())
             self.assertIn("Committed g1f3", output.getvalue())
             saved = JsonGameStore(state).load()
             self.assertEqual(saved.moves, ["g1f3"])
             self.assertEqual(
                 [event["confirmation_source"] for event in saved.events
                  if event["event"] == "action_confirmed"],
-                ["controller_done"],
+                ["controller_done"] * 3,
             )
 
     def test_clean_physical_resume_continues_without_routine_prompts(self) -> None:
@@ -171,7 +204,7 @@ class PlayConfigurationTests(unittest.TestCase):
                 ]), 0)
             self.assertEqual(JsonGameStore(state).load().moves, ["e2e4", "a7a6"])
 
-    def test_strict_clearance_cli_override_rejects_crowded_knight(self) -> None:
+    def test_strict_clearance_cli_stages_crowded_knight(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / "game.json"
             controller = _geometry_from_file(
@@ -188,11 +221,13 @@ class PlayConfigurationTests(unittest.TestCase):
                 result = main([
                     "--new", "--state", str(state), "--moves", "g1f3", "--strict-clearance",
                 ])
-            self.assertEqual(result, 1)
+            self.assertEqual(result, 0)
             self.assertIn("Tight-route fallback: disabled", output.getvalue())
-            self.assertIn("move g1f3 cannot start", error.getvalue())
+            self.assertIn("knight_stage", output.getvalue())
+            self.assertIn("Committed g1f3", output.getvalue())
+            self.assertEqual(error.getvalue(), "")
             saved = JsonGameStore(state).load()
-            self.assertEqual(saved.moves, [])
+            self.assertEqual(saved.moves, ["g1f3"])
             self.assertIsNone(saved.pending)
 
     def test_supervised_physical_mode_keeps_explicit_approvals(self) -> None:

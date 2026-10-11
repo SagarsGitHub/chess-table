@@ -13,11 +13,12 @@ from unittest.mock import patch
 
 import chess
 
+from chess_table_host.checkpoint import STATE_VERSION
 from chess_table_host.game import (
     GameRunner, GameState, GameStateError, JsonGameStore, ReconciliationRequired,
 )
-from chess_table_host.checkpoint import STATE_VERSION
-from chess_table_host.planner import BoardSquare, ParkingInventory, ParkingSlot, Transfer
+from chess_table_host.offset_stage import plan_offset_cleared_transfer
+from chess_table_host.planner import BoardSquare, ParkingInventory, ParkingSlot, PieceOffset, Transfer
 from chess_table_host.play import SimulatedLink, _geometry_from_file, main
 from chess_table_host.reset_plan import plan_reset
 from chess_table_host.routing import RouteGeometry
@@ -35,6 +36,8 @@ class FakeLink:
     def __init__(self, *, fail_on: int | None = None, during=None) -> None:
         self.maps: list[str] = []
         self.carries: list[tuple[str, str, str]] = []
+        self.offsets: list[tuple[int, str, str]] = []
+        self.commands: list[tuple[str, tuple]] = []
         self.fail_on = fail_on
         self.during = during
 
@@ -43,11 +46,21 @@ class FakeLink:
 
     def carry(self, source_id: str, destination_id: str, point_chars: str):
         self.carries.append((source_id, destination_id, point_chars))
+        self.commands.append(("CARRY", (source_id, destination_id, point_chars)))
         if self.during:
             self.during()
-        if self.fail_on == len(self.carries):
-            raise OSError("serial disconnect during reset CARRY")
-        return SimpleNamespace(command_id=len(self.carries))
+        if self.fail_on == len(self.commands):
+            raise OSError("serial disconnect during reset action")
+        return SimpleNamespace(command_id=len(self.commands))
+
+    def offset(self, square: int, corner: str, direction: str):
+        self.offsets.append((square, corner, direction))
+        self.commands.append(("OFFSET", (square, corner, direction)))
+        if self.during:
+            self.during()
+        if self.fail_on == len(self.commands):
+            raise OSError("serial disconnect during reset action")
+        return SimpleNamespace(command_id=len(self.commands))
 
 
 class ResetTests(unittest.TestCase):
@@ -78,11 +91,12 @@ class ResetTests(unittest.TestCase):
     def test_misplaced_home_rank_rook_returns_directly_without_staging(self) -> None:
         self.play("g1f3", "g8f6", "h1g1", "h8g8")
         actions = self.runner.preflight_reset(GEOMETRY)
-        self.assertEqual(actions[0].source, BoardSquare("g1"))
-        self.assertEqual(actions[0].destination, BoardSquare("h1"))
-        self.assertEqual(actions[1].source, BoardSquare("g8"))
-        self.assertEqual(actions[1].destination, BoardSquare("h8"))
-        self.assertEqual(len(actions), 4)
+        transfers = [action for action in actions if isinstance(action, Transfer)]
+        self.assertEqual(transfers[0].source, BoardSquare("g1"))
+        self.assertEqual(transfers[0].destination, BoardSquare("h1"))
+        self.assertEqual(transfers[1].source, BoardSquare("g8"))
+        self.assertEqual(transfers[1].destination, BoardSquare("h8"))
+        self.assertEqual(len(transfers), 4)
 
     def test_reset_prefers_outer_back_rank_pieces_across_board_and_parking(self) -> None:
         squares = dict(self.runner.state.physical_squares)
@@ -138,15 +152,107 @@ class ResetTests(unittest.TestCase):
         squares["a3"] = squares.pop("a1")
         slots[0] = squares.pop("a2")
 
-        actions = plan_reset(squares, slots, GEOMETRY, lambda *_args: None)
+        actions = plan_reset(
+            squares, slots, GEOMETRY, lambda *_args: None,
+            plan_clearance_bundle=lambda *_args: None,
+        )
         self.assertEqual(actions, (
             Transfer("P", ParkingSlot(0), BoardSquare("a2"), "reset_board"),
             Transfer("R", BoardSquare("a3"), BoardSquare("a1"), "reset_board"),
         ))
 
+    def test_reset_uses_clearance_nudges_before_tight_fallback(self) -> None:
+        squares = dict(self.runner.state.physical_squares)
+        squares["c3"] = squares.pop("b1")
+        before = dict(squares)
+        transfer = Transfer("N", BoardSquare("c3"), BoardSquare("b1"), "reset_board")
+        bundle = (
+            PieceOffset("P", BoardSquare("b2"), "NE", "OUT", "clearance_offset_out"),
+            Transfer("N", BoardSquare("c3"), BoardSquare("b1"), "clearance_offset_move"),
+            PieceOffset("P", BoardSquare("b2"), "NE", "IN", "clearance_offset_in"),
+        )
+        calls = []
+
+        def cleared(candidate, actual_squares, slots, geometry):
+            self.assertEqual(candidate, transfer)
+            self.assertEqual(actual_squares, before)
+            self.assertEqual(slots, [None] * 32)
+            self.assertIs(geometry, GEOMETRY)
+            calls.append(candidate)
+            return bundle
+
+        def tight_fallback(*_args):
+            self.fail("a complete offset bundle should precede tight fallback")
+
+        actions = plan_reset(
+            squares, [None] * 32, GEOMETRY, tight_fallback,
+            plan_clearance_bundle=cleared,
+        )
+        self.assertEqual(actions, bundle)
+        self.assertEqual(calls, [transfer])
+        self.assertEqual(squares, before)
+
+    def test_reset_rejects_unrestored_clearance_nudge(self) -> None:
+        squares = dict(self.runner.state.physical_squares)
+        squares["c3"] = squares.pop("b1")
+        unfinished = (
+            PieceOffset("P", BoardSquare("b2"), "NE", "OUT", "clearance_offset_out"),
+            Transfer("N", BoardSquare("c3"), BoardSquare("b1"), "clearance_offset_move"),
+        )
+        with self.assertRaisesRegex(GameStateError, "restored nudges"):
+            plan_reset(
+                squares, [None] * 32, GEOMETRY, lambda *_args: None,
+                plan_clearance_bundle=lambda *_args: unfinished,
+            )
+
+    def test_reset_can_restore_crowded_knight_with_strict_offset_bundle(self) -> None:
+        squares = dict(self.runner.state.physical_squares)
+        squares["c3"] = squares.pop("b1")
+
+        def no_tight_fallback(*_args):
+            self.fail("measured offset route should avoid the tight fallback")
+
+        actions = plan_reset(
+            squares, [None] * 32, GEOMETRY, no_tight_fallback,
+            plan_clearance_bundle=plan_offset_cleared_transfer,
+        )
+        self.assertEqual(len(actions), 5)
+        self.assertEqual([action.direction for action in actions if isinstance(action, PieceOffset)],
+                         ["OUT", "OUT", "IN", "IN"])
+        self.assertEqual(
+            [action for action in actions if isinstance(action, Transfer)],
+            [Transfer("N", BoardSquare("c3"), BoardSquare("b1"), "clearance_offset_move")],
+        )
+
+    def test_checkpointed_reset_executes_and_resumes_confirmed_offset(self) -> None:
+        self.play("g1f3")
+        actions = self.runner.prepare_reset(GEOMETRY)
+        self.assertIsInstance(actions[0], PieceOffset)
+        self.assertEqual(actions[0].direction, "OUT")
+        with self.assertRaises(OSError):
+            self.runner.execute_reset(FakeLink(fail_on=1), GEOMETRY,
+                                      lambda _action: True)
+        saved = self.store.load()
+        self.assertEqual(saved.reset.phase, "in_flight")
+        self.assertEqual(saved.reset.next_action, 0)
+        resumed = GameRunner(saved, self.store, allow_tight_routes=True)
+        with self.assertRaises(ReconciliationRequired):
+            resumed.execute_reset(FakeLink(), GEOMETRY, lambda _action: True)
+        # The operator has inspected the table and confirmed the OUT nudge.
+        resumed.resolve_uncertain_reset("destination")
+        self.assertEqual(self.store.load().reset.next_action, 1)
+        link = FakeLink()
+        resumed.execute_reset(link, GEOMETRY, lambda _action: True,
+                              confirmation_source="simulation")
+        self.assertEqual(len(link.commands), len(actions) - 1)
+        self.assertEqual(len(link.carries), sum(isinstance(action, Transfer)
+                                               for action in actions))
+        self.assert_start()
+
     def test_board_knight_returns_before_parked_pawn_when_exits_stay_open(self) -> None:
         self.play("e2e4", "e7e5", "f1c4", "b8c6", "c4f7", "e8f7")
-        actions = self.runner.preflight_reset(GEOMETRY)
+        actions = [action for action in self.runner.preflight_reset(GEOMETRY)
+                   if isinstance(action, Transfer)]
         knight = next(index for index, action in enumerate(actions)
                       if action.source == BoardSquare("c6") and action.destination == BoardSquare("b8"))
         first_parked_pawn = next(index for index, action in enumerate(actions)
@@ -156,7 +262,8 @@ class ResetTests(unittest.TestCase):
     def test_parked_pawn_precedes_bishop_if_bishop_would_trap_its_exit(self) -> None:
         self.play("e2e4", "e7e5", "f1c4", "b8c6", "c4f7", "e8f7")
         actions = self.runner.preflight_reset(GEOMETRY)
-        parked = [action for action in actions if isinstance(action.source, ParkingSlot)]
+        parked = [action for action in actions
+                  if isinstance(action, Transfer) and isinstance(action.source, ParkingSlot)]
         self.assertEqual([action.piece for action in parked], ["p", "B"])
 
     def test_parked_bishop_precedes_pawn_when_both_exits_are_open(self) -> None:
@@ -167,7 +274,8 @@ class ResetTests(unittest.TestCase):
         slots[20] = "p"
         slots[23] = "B"
         actions = self.runner.preflight_reset(GEOMETRY)
-        parked = [action for action in actions if isinstance(action.source, ParkingSlot)]
+        parked = [action for action in actions
+                  if isinstance(action, Transfer) and isinstance(action.source, ParkingSlot)]
         self.assertEqual([action.piece for action in parked], ["B", "p"])
 
     def test_full_game_reset_handles_parked_home_cycle(self) -> None:
@@ -179,11 +287,12 @@ class ResetTests(unittest.TestCase):
         self.store.save(state)
         self.runner = GameRunner(self.store.load(), self.store, allow_tight_routes=True)
         actions = self.runner.prepare_reset(GEOMETRY)
-        self.assertEqual(sum(isinstance(action.source, ParkingSlot) for action in actions), 20)
+        self.assertEqual(sum(isinstance(action, Transfer) and
+                             isinstance(action.source, ParkingSlot) for action in actions), 20)
         link = FakeLink()
         self.runner.execute_reset(link, GEOMETRY, lambda _action: True,
                                   confirmation_source="simulation")
-        self.assertEqual(len(link.carries), len(actions))
+        self.assertEqual(len(link.commands), len(actions))
         self.assert_start()
 
     def test_stage_pawn_blocker_so_knight_goes_home_in_one_carry(self) -> None:
@@ -193,7 +302,8 @@ class ResetTests(unittest.TestCase):
         squares["g1"], squares["h2"] = squares["h2"], squares["g1"]
         squares["g4"] = squares.pop("g2")
         squares["c4"] = squares.pop("f1")
-        actions = self.runner.preflight_reset(GEOMETRY)
+        actions = [action for action in self.runner.preflight_reset(GEOMETRY)
+                   if isinstance(action, Transfer)]
         knight_returns = [action for action in actions
                           if action.piece == "N" and action.destination == BoardSquare("g1")]
         self.assertEqual(len(knight_returns), 1)
@@ -205,8 +315,8 @@ class ResetTests(unittest.TestCase):
         self.play("e2e4", "d7d5", "e4d5")
         self.assertEqual(sum(piece is not None for piece in self.runner.state.physical_parking), 1)
         actions = self.runner.prepare_reset(GEOMETRY)
-        self.assertTrue(any(isinstance(action.source, ParkingSlot) for action in actions))
-        self.assertEqual(sum(1 for action in actions if isinstance(action, Transfer)), len(actions))
+        self.assertTrue(any(isinstance(action, Transfer) and
+                            isinstance(action.source, ParkingSlot) for action in actions))
         self.assertEqual(self.store.load().reset.next_action, 0)
 
         def during() -> None:
@@ -214,14 +324,14 @@ class ResetTests(unittest.TestCase):
             self.assertEqual(saved.reset.phase, "in_flight")
             self.assertEqual(saved.moves, ["e2e4", "d7d5", "e4d5"])
 
-        def confirm(_action: Transfer) -> bool:
+        def confirm(_action: Transfer | PieceOffset) -> bool:
             saved = self.store.load()
             self.assertEqual(saved.reset.phase, "awaiting_confirmation")
             return True
 
         link = FakeLink(during=during)
         self.runner.execute_reset(link, GEOMETRY, confirm, confirmation_source="simulation")
-        self.assertEqual(len(link.carries), len(actions))
+        self.assertEqual(len(link.commands), len(actions))
         self.assert_start()
 
     def test_uncertain_reset_requires_inspection_and_never_replays_it_automatically(self) -> None:
@@ -236,10 +346,13 @@ class ResetTests(unittest.TestCase):
         with self.assertRaises(ReconciliationRequired):
             resumed.execute_reset(FakeLink(), GEOMETRY, lambda _action: True)
         resumed.resolve_uncertain_reset("destination")
-        self.assertEqual(self.store.load().reset.next_action, 1)
+        reconciled = self.store.load()
+        self.assertEqual(reconciled.reset.next_action, 1)
+        self.assertEqual(reconciled.events[-1]["action"], 0)
+        self.assertEqual(reconciled.events[-1]["outcome"], "destination")
         link = FakeLink()
         resumed.execute_reset(link, GEOMETRY, lambda _action: True)
-        self.assertEqual(len(link.carries), len(actions) - 1)
+        self.assertEqual(len(link.commands), len(actions) - 1)
         self.assert_start()
 
     def test_reconciling_last_reset_carry_finishes_once_without_restarting(self) -> None:
@@ -276,9 +389,13 @@ class ResetTests(unittest.TestCase):
             self.runner.execute_reset(FakeLink(fail_on=1), GEOMETRY, lambda _action: True)
         resumed = GameRunner(self.store.load(), self.store, allow_tight_routes=True)
         resumed.resolve_uncertain_reset("source")
+        reconciled = self.store.load()
+        self.assertEqual(reconciled.reset.next_action, 0)
+        self.assertEqual(reconciled.events[-1]["action"], 0)
+        self.assertEqual(reconciled.events[-1]["outcome"], "source")
         link = FakeLink()
         resumed.execute_reset(link, GEOMETRY, lambda _action: True)
-        self.assertEqual(len(link.carries), len(actions))
+        self.assertEqual(len(link.commands), len(actions))
         self.assert_start()
 
     def test_abort_reset_restores_original_checkpoint_after_manual_restore(self) -> None:
@@ -323,9 +440,10 @@ class ResetTests(unittest.TestCase):
         self.runner.state.committed_parking = ParkingInventory(tuple(self.runner.state.physical_parking))
         self.store.save(self.runner.state)
         actions = self.runner.prepare_reset(GEOMETRY)
-        self.assertTrue(any(action.source == ParkingSlot(0) for action in actions))
+        self.assertTrue(any(action.source == ParkingSlot(0) for action in actions
+                            if isinstance(action, Transfer)))
         self.assertTrue(any(action.source.name == "a1" for action in actions
-                            if hasattr(action.source, "name")))
+                            if isinstance(action, Transfer) and hasattr(action.source, "name")))
         self.runner.execute_reset(FakeLink(), GEOMETRY, lambda _action: True)
         self.assert_start()
 
@@ -338,7 +456,7 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(self.runner.state.physical_squares["b8"], "P")
         actions = self.runner.prepare_reset(GEOMETRY)
         self.assertTrue(any(action.source == ParkingSlot(0) or action.piece == "P"
-                            for action in actions))
+                            for action in actions if isinstance(action, Transfer)))
         self.runner.execute_reset(FakeLink(), GEOMETRY, lambda _action: True)
         self.assert_start()
 

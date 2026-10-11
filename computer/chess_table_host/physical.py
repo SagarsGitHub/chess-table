@@ -9,7 +9,7 @@ from __future__ import annotations
 import chess
 
 from .game_errors import GameStateError
-from .planner import Action, BoardSquare, ManualReplacement, ParkingInventory, ParkingSlot, Transfer
+from .planner import Action, BoardSquare, ManualReplacement, ParkingInventory, ParkingSlot, PieceOffset, RookOffset, Transfer
 from .routing import location_point
 from .wire import encode_map
 
@@ -87,6 +87,11 @@ def _apply_action(
             raise GameStateError(f"destination is occupied: {action.destination}")
         _put_piece(squares, slots, action.source, None)
         _put_piece(squares, slots, action.destination, action.piece)
+    elif isinstance(action, (RookOffset, PieceOffset)):
+        if squares.get(action.square.name) != action.piece:
+            raise GameStateError(f"offset square does not contain {action.piece}: {action.square}")
+        # The piece remains assigned to its original square in the occupancy
+        # map; the pending action prefix records whether it is off center.
     else:
         if squares.get(action.square.name) != action.pawn:
             raise GameStateError(f"promotion square does not contain {action.pawn}")

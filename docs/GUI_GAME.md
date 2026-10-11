@@ -75,7 +75,7 @@ always pass the detected `/dev/...` device with `--port` in WSL. A physical
 session writes the serial transcript beside its checkpoint as
 `<state-name>.serial.jsonl`.
 
-Normal play needs no confirmation after a matched `DONE CARRY`. Tight-route fallback may approach occupied pieces more closely than the 18 mm footprint model allows, while still avoiding occupied centers and obeying travel and 12-waypoint limits; `--strict-clearance` disables it. The host favors detours around long crowded horizontal passages, but that preference still needs a loaded trial with off-center neighbors. Loaded travel is 50 mm/s at 400 mm/s², slowing to 30 mm/s at 250 mm/s² on horizontal grid legs beside occupied squares. See [routing](ROUTING.md) and the [roadmap](ROADMAP.md#immediate-next-actions).
+Normal play needs no confirmation after a matched `DONE CARRY`, `DONE OFFSET`, or `DONE CARRY_OFFSET`. Crowded board moves and captures may temporarily stage a blocker. If a carry still needs space, the host may nudge one or two standing neighbors toward corners within their squares, carry the intended piece, then recenter those neighbors. The same checked bundle can appear during board reset. Castling nudges the rook within its square before the king carry, then carries it directly from that corner to its castled square; one or two nearby pieces may also be staged and restored for the final rook carry. Each action is checkpointed, and each staged or offset action requires measured clearance. Only after every checked castling plan fails, an enabled tight-route setting permits a last-resort three-action castle with the rook corner nudge and relaxed circular clearance on the king and rook carries. Occupied centers, measured travel, the 12-waypoint cap, offset pickup, and release clearance remain checked. The route can disturb nearby pieces; watch it and inspect the board if anything shifts. `--strict-clearance` disables this fallback. Loaded travel is 50 mm/s at 400 mm/s², slowing to 30 mm/s at 250 mm/s² on horizontal grid legs beside occupied squares. New offset and multi-carry plans need loaded trials with off-center neighbors. See [routing](ROUTING.md) and the [roadmap](ROADMAP.md#immediate-next-actions).
 
 After firmware changes, stop the GUI to release the serial port, flash the Uno, and resume the same checkpoint. A browser refresh changes only the interface.
 
@@ -101,12 +101,15 @@ parking is empty, the saved state becomes a fresh standard-position game.
 Use this control for an orderly midgame reset.
 
 **Stop motion** sends a controller `STOP` immediately during a physical
-`CARRY`, `HOME`, or `REF`. During simulation, engine thinking, or between
-transfers, it pauses at the next boundary. An interrupted `CARRY` stays
-`in_flight` in the checkpoint. If a transfer stopped, timed out, or lost its
-controller connection, inspect the piece, its source and destination, and
-affected parking slots before further motion. The recovery panel offers
-**Piece at source**, **Piece at destination**, or **Restored prior position**.
+`CARRY`, `CARRY_OFFSET`, `OFFSET`, `HOME`, or `REF`. During simulation, engine
+thinking, or between actions, it pauses at the next boundary. Interrupted
+motion stays `in_flight` in the checkpoint. If an action stopped, timed out,
+or lost its controller connection, inspect the piece, nearby pieces, magnet,
+transfer endpoints, and affected parking slots before further motion. For a
+carry, the recovery panel offers **Piece at source**, **Piece at destination**,
+or **Restored prior position**. For an `OFFSET`, choose **Piece at center** or
+**Piece at corner** after checking its actual location, or restore the full
+prior position.
 Select an outcome only after
 putting the actual pieces in that state and marking the inspection checkbox.
 Restoring the prior position means restoring the *entire* committed game
@@ -117,8 +120,8 @@ continue. The GUI cannot determine the outcome by sensing the board.
 After a completed or paused game with no pending move, the same control reads
 **Reset board for new game**. During an interrupted reset, it reads
 **Continue board reset**. The host preflights the full return plan before
-starting it and archives the played checkpoint before the first reset carry.
-If a reset transfer is interrupted, reconcile it in the same way, then
+starting it and archives the played checkpoint before the first reset action.
+If a reset carry or offset is interrupted, reconcile it in the same way, then
 continue the saved plan. An uncertain chess move must be physically inspected
 and reconciled before a reset can begin.
 

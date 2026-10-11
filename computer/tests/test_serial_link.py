@@ -86,6 +86,15 @@ class SerialLinkTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "serial frame too long"):
             link.request("HELLO")
         self.assertTrue(link.physical_state_uncertain)
+    def test_extended_hello_capabilities_fit_reply_at_three_digit_id(self) -> None:
+        caps = "STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,CARRY_OFFSET,OFFSET,SAVE,GEOM"
+        link, _ = link_with_script(
+            lambda _data, stream: stream.feed(
+                f"@100 ACK\n@100 DONE HELLO V=1 CAPS={caps}\n"
+            ),
+            first_command_id=100,
+        )
+        self.assertIn("CARRY_OFFSET", link.hello().capabilities)
 
     def test_hello_status_and_generic_request(self) -> None:
         def script(data, stream):
@@ -134,6 +143,69 @@ class SerialLinkTests(unittest.TestCase):
                 b"@3 SAVE\n",
             ],
         )
+
+    def test_offset_emits_exact_frame_and_requires_matching_completion(self) -> None:
+        def script(data, stream):
+            command_id = data.decode().split()[0]
+            stream.feed(f"{command_id} ACK\n{command_id} DONE OFFSET\n")
+
+        link, stream = link_with_script(script)
+        self.assertEqual(link.offset(7, "NW", "OUT").payload, ("OFFSET",))
+        self.assertEqual(link.offset("7", "NW", "IN").payload, ("OFFSET",))
+        self.assertEqual(stream.written, [
+            b"@1 OFFSET 7 NW OUT\n",
+            b"@2 OFFSET 7 NW IN\n",
+        ])
+
+        wrong, _ = link_with_script(
+            lambda _data, io: io.feed("@1 ACK\n@1 DONE CARRY\n")
+        )
+        with self.assertRaisesRegex(ProtocolError, "OFFSET completion"):
+            wrong.offset(7, "NW", "OUT")
+        self.assertTrue(wrong.physical_state_uncertain)
+
+    def test_offset_validates_square_corner_and_direction_before_write(self) -> None:
+        link, stream = link_with_script(lambda _data, _stream: None)
+        for arguments in ((64, "NW", "OUT"), (-1, "NW", "OUT"),
+                          ("07", "NW", "OUT"), (7, "N", "OUT"),
+                          (7, "NW", "SIDE")):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                link.offset(*arguments)
+        self.assertEqual(stream.written, [])
+
+    def test_offset_route_preflight_rejection_does_not_mark_motion_uncertain(self) -> None:
+        link, stream = link_with_script(
+            lambda _data, io: io.feed("@1 ACK\n@1 ERR ROUTE\n")
+        )
+        with self.assertRaises(ControllerError) as caught:
+            link.offset(7, "NW", "OUT")
+        self.assertFalse(caught.exception.requires_reconciliation)
+        self.assertFalse(link.physical_state_uncertain)
+        self.assertEqual(stream.written, [b"@1 OFFSET 7 NW OUT\n"])
+
+    def test_carry_offset_frame_validation_and_reconciliation_policy(self) -> None:
+        link, stream = link_with_script(
+            lambda _data, io: io.feed("@1 ACK\n@1 DONE CARRY_OFFSET\n")
+        )
+        self.assertEqual(
+            link.carry_offset(7, "NE", 5, "F173").payload, ("CARRY_OFFSET",)
+        )
+        self.assertEqual(stream.written, [b"@1 CARRY_OFFSET 7 NE 5 F173\n"])
+
+        invalid, unsent = link_with_script(lambda _data, _io: None)
+        for arguments in ((64, "NE", 5, "F173"), (7, "N", 5, "F173"),
+                          (7, "NE", 7, "F173"), (7, "NE", 5, "bad")):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                invalid.carry_offset(*arguments)
+        self.assertEqual(unsent.written, [])
+
+        rejected, _ = link_with_script(
+            lambda _data, io: io.feed("@1 ACK\n@1 ERR ROUTE\n")
+        )
+        with self.assertRaises(ControllerError) as caught:
+            rejected.carry_offset(7, "NE", 5, "F173")
+        self.assertFalse(caught.exception.requires_reconciliation)
+        self.assertFalse(rejected.physical_state_uncertain)
 
     def test_geometry_reports_referenced_machine_dimensions(self) -> None:
         payload = "GEOM X=251.0850 Y=251.9625 OX=0.5425 OY=0.9813 P=31.2500 I=2.0000 PPM=133.3333"

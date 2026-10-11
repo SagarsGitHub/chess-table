@@ -5,6 +5,7 @@ const { CPU, avrInstruction, AVRTimer, timer0Config, timer1Config, AVRIOPort,
   portBConfig, portCConfig, portDConfig, AVRUSART, usart0Config,
   AVREEPROM, EEPROMMemoryBackend } = require('avr8js');
 const smallTableTest = process.argv.includes('--small-table');
+const narrowReleaseTest = process.argv.includes('--narrow-release');
 const restoreTest = process.argv.includes('--restore');
 const badStorage = process.argv.includes('--corrupt') || process.argv.includes('--interrupted-save') ||
   process.argv.includes('--config-change');
@@ -51,8 +52,9 @@ let modelEnabled = false;
 let modelDirty = false;
 let modelFault = '';
 let injectedLimit = null;
-const physical = [16667, restoreTest ? 16667 : 33595]; // Restore starts away from either end.
-const stroke = smallTableTest ? [26667, 33595] : [33478, 33595];
+const physical = [16667, restoreTest || narrowReleaseTest ? 16667 : 33595]; // Restore starts away from either end.
+const stroke = smallTableTest ? [26667, 33595] :
+  narrowReleaseTest ? [33333, 33333] : [33478, 33595];
 // Default model matches the measured usable 247.085 x 247.963 mm, before
 // the pulse model's sub-pulse/stop-edge uncertainty.
 let trackBoard = false;
@@ -187,6 +189,22 @@ function routeMm(encoded) {
   }
   return points;
 }
+function withDeliveryOvershoot(points) {
+  const previous = points.at(-2), nominal = points.at(-1);
+  const dx = nominal[0] - previous[0], dy = nominal[1] - previous[1];
+  const length = Math.hypot(dx, dy);
+  assert(length > 0, 'final loaded leg has a direction');
+  for (const overshoot of [6.25, 5.625]) {
+    const release = [nominal[0] + overshoot * dx / length,
+      nominal[1] + overshoot * dy / length];
+    if (release.every((mm, axis) => {
+      const pulses = Math.round(mm / .0075);
+      return pulses >= Math.ceil(2 / .0075) &&
+        pulses <= Math.floor((stroke[axis] * .0075 - 2) / .0075);
+    })) return [...points.slice(0, -1), release];
+  }
+  throw new Error('no compensated release target inside measured bounds');
+}
 function mapHex(locations) {
   const bytes = Buffer.alloc(12);
   for (const id of locations) bytes[id >> 3] |= 1 << (id & 7);
@@ -200,7 +218,9 @@ function request(verb, wait = 35) {
   return id;
 }
 function expectDone(id, verb, timeout = 2000) {
-  until(() => serial.includes('@' + id + ' DONE ' + verb), timeout);
+  // Match the complete terminal line, as the host does. Matching the verb
+  // before its newline can race the controller's pending-state cleanup.
+  until(() => serial.includes('@' + id + ' DONE ' + verb + '\r\n'), timeout);
 }
 function expectError(id, code) {
   assert(serial.includes('@' + id + ' ERR ' + code), serial.slice(-600));
@@ -215,12 +235,53 @@ function map(locations) {
   expectDone(id, 'MAP');
 }
 function carry(source, destination, encoded, timeout = 25000) {
-  expectedRoute = routeMm(encoded); maxCrossTrack = 0;
+  const nominalRoute = routeMm(encoded);
+  expectedRoute = destination < 64 ? withDeliveryOvershoot(nominalRoute) : nominalRoute;
+  maxCrossTrack = 0;
   piecePulses = [[], []];
   trackPiece = true; relayEvents = [];
   const id = request('CARRY ' + source + ' ' + destination + ' ' + encoded);
   expectDone(id, 'CARRY', timeout); run(80);
   assert.equal(relayEvents.length, 2, 'one pickup and one release');
+  assert(relayEvents[0].on && !relayEvents[1].on);
+  for (let axis = 0; axis < 2; axis++) {
+    assert(Math.abs(relayEvents[0].physical[axis] * .0075 - expectedRoute[0][axis]) < .05);
+    assert(Math.abs(relayEvents[1].physical[axis] * .0075 - expectedRoute.at(-1)[axis]) < .05);
+  }
+  trackPiece = false;
+  return id;
+}
+function offsetPointMm(square, corner) {
+  const x = 2 * (square % 8) + 1 + (corner[1] === 'E' ? .6 : -.6);
+  const y = 2 * Math.floor(square / 8) + 1 + (corner[0] === 'N' ? .6 : -.6);
+  return [origin[0] + x * 31.25 / 2, origin[1] + y * 31.25 / 2];
+}
+function offset(square, corner, direction, timeout = 10000) {
+  const centerCode = [2 * (square % 8) + 1, 2 * Math.floor(square / 8) + 1]
+    .map(v => v.toString(17).toUpperCase()).join('');
+  const center = routeMm(centerCode)[0];
+  const edge = offsetPointMm(square, corner);
+  expectedRoute = withDeliveryOvershoot(direction === 'OUT' ? [center, edge] : [edge, center]);
+  maxCrossTrack = 0; piecePulses = [[], []];
+  trackPiece = true; relayEvents = [];
+  const id = request('OFFSET ' + square + ' ' + corner + ' ' + direction);
+  expectDone(id, 'OFFSET', timeout); run(80);
+  assert.equal(relayEvents.length, 2, 'offset picks up and releases once');
+  assert(relayEvents[0].on && !relayEvents[1].on);
+  for (let axis = 0; axis < 2; axis++) {
+    assert(Math.abs(relayEvents[0].physical[axis] * .0075 - expectedRoute[0][axis]) < .05);
+    assert(Math.abs(relayEvents[1].physical[axis] * .0075 - expectedRoute[1][axis]) < .05);
+  }
+  trackPiece = false;
+  return id;
+}
+function carryOffset(source, corner, destination, encoded, timeout = 25000) {
+  expectedRoute = withDeliveryOvershoot([offsetPointMm(source, corner), ...routeMm(encoded).slice(1)]);
+  maxCrossTrack = 0; piecePulses = [[], []];
+  trackPiece = true; relayEvents = [];
+  const id = request('CARRY_OFFSET ' + source + ' ' + corner + ' ' + destination + ' ' + encoded);
+  expectDone(id, 'CARRY_OFFSET', timeout); run(80);
+  assert.equal(relayEvents.length, 2, 'offset-source carry picks up and releases once');
   assert(relayEvents[0].on && !relayEvents[1].on);
   for (let axis = 0; axis < 2; axis++) {
     assert(Math.abs(relayEvents[0].physical[axis] * .0075 - expectedRoute[0][axis]) < .05);
@@ -281,7 +342,7 @@ assert(!relayHigh);
 modelEnabled = true; updateModel();
 
 let id = request('HELLO');
-assert(serial.includes('@' + id + ' DONE HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,SAVE,GEOM'));
+assert(serial.includes('@' + id + ' DONE HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,CARRY_OFFSET,OFFSET,SAVE,GEOM,OVER20'));
 id = request('STATUS');
 assert(serial.includes('DONE STATUS REF=0 BUSY=0 MAP=0 SAVED=' + (restoreTest ? 1 : 0)));
 id = request('GEOM'); expectError(id, 'REFERENCE');
@@ -321,6 +382,14 @@ if (badStorage) {
   id = request('CARRY 1 18 314244550'); expectError(id, 'SYNTAX');
   id = request('CARRY 256 18 31424455'); expectError(id, 'SYNTAX');
   id = request('CARRY 1 18 ' + '31'.repeat(13)); expectError(id, 'SYNTAX');
+  id = request('OFFSET 7 NE OUT'); expectError(id, 'REFERENCE'); noMotion();
+  id = request('OFFSET 64 NE OUT'); expectError(id, 'SYNTAX');
+  id = request('OFFSET 7 XW OUT'); expectError(id, 'SYNTAX');
+  id = request('OFFSET 7 NE SIDE'); expectError(id, 'SYNTAX');
+  id = request('CARRY_OFFSET 7 NE 5 F1G2E4C2B1'); expectError(id, 'REFERENCE'); noMotion();
+  id = request('CARRY_OFFSET 64 NE 5 F1G2E4C2B1'); expectError(id, 'SYNTAX');
+  id = request('CARRY_OFFSET 7 NE 64 F1G2E4C2B1'); expectError(id, 'SYNTAX');
+  id = request('CARRY_OFFSET 7 NX 5 F1G2E4C2B1'); expectError(id, 'SYNTAX');
   id = request('HOME');
   assert(!serial.includes('@' + id + ' DONE HOME'), 'HOME completion must be asynchronous');
   const homeId = id;
@@ -332,6 +401,16 @@ if (badStorage) {
   for (let axis = 0; axis < 2; axis++)
     assert(Math.abs(physical[axis] * .0075 - 2) < .03, 'HOME parks at MIN inset');
   checkGeom();
+  if (narrowReleaseTest) {
+    map([7]);
+    offset(7, 'NE', 'OUT');
+    const nominal = offsetPointMm(7, 'NE');
+    const actual = relayEvents[1].physical.map(pulses => pulses * .0075);
+    assert(Math.abs(Math.hypot(actual[0] - nominal[0], actual[1] - nominal[1]) - 5.625) < .05,
+      'outer-square release retries at 90% inside measured travel');
+    console.log('PASS outer-square OFFSET OUT uses bounded 90% release retry');
+    process.exit(0);
+  }
   id = request('SAVE'); expectDone(id, 'SAVE');
   assert.equal(eeprom.memory[0], 0xa7);
   fs.writeFileSync(eepromFile, eeprom.memory);
@@ -348,6 +427,36 @@ if (badStorage) {
   carry(1, 18, '31424455');
   id = request('CARRY 1 18 31424455'); expectError(id, 'MAP'); noMotion();
   console.log('PASS square-to-square carry commits occupancy only after release');
+
+  // The nominal final leg clears P01, but extending from a1 toward (2,0)
+  // would pass within one piece diameter of that occupied parking center.
+  map([9, 65]);
+  id = request('CARRY 9 0 33220211'); expectError(id, 'ROUTE'); noMotion();
+  console.log('PASS occupied parking slot blocks compensated release before motion');
+
+  // A rook nudges inside h1 while h2 and even the h1 corner parking slot P08
+  // are occupied. The adjacent P25 slot would be too close to the NE target.
+  map([7, 15, 72, 89]);
+  id = request('OFFSET 7 NE OUT'); expectError(id, 'ROUTE'); noMotion();
+  map([7, 15, 72]);
+  id = request('OFFSET 0 NW OUT'); expectError(id, 'MAP'); noMotion();
+  offset(7, 'NE', 'OUT');
+  id = request('STATUS'); assert(serial.includes('@' + id + ' DONE STATUS REF=1 BUSY=0 MAP=1'));
+  offset(7, 'NE', 'IN');
+  offset(7, 'NE', 'OUT');
+  offset(7, 'NE', 'IN');
+  console.log('PASS in-square OFFSET, occupied corner parking, clearance guard, and unchanged MAP');
+
+  // The rook starts at h1's NE corner, with its corner parking slot occupied.
+  // A single command picks it up there and carries to f1 after the king has
+  // moved to g1. The encoded center is only an anchor for route validation.
+  map([7, 6, 72]);
+  offset(7, 'NE', 'OUT');
+  id = request('CARRY_OFFSET 7 NE 5 F1G2E4C2B3'); expectError(id, 'ROUTE'); noMotion();
+  id = request('CARRY_OFFSET 7 NE 6 F1G2E4C2D1'); expectError(id, 'MAP'); noMotion();
+  carryOffset(7, 'NE', 5, 'F1G2E4C2B1');
+  id = request('CARRY 7 5 F1G2E4C2B1'); expectError(id, 'MAP'); noMotion();
+  console.log('PASS CARRY_OFFSET direct corner pickup, occupied parking, route/map validation, and committed occupancy');
 
   // Direct grid diagonal is legal only when it is 45 degrees and crosses no
   // occupied center. The d4 center lies halfway between grid points 66 and 88.
@@ -441,16 +550,46 @@ if (badStorage) {
   trackBoard = false;
   id = request('REF'); expectDone(id, 'REF', 55000);
   trackBoard = true;
+  map([7]);
+  const offsetStopId = request('OFFSET 7 NE OUT');
+  until(() => relayHigh, 9000);
+  id = request('STOP'); expectDone(id, 'STOP');
+  assert(serial.includes('@' + offsetStopId + ' ERR CANCELED'));
+  let stopCounts = counts(); run(700);
+  assert.deepEqual(counts(), stopCounts); assert(!relayHigh);
+  id = request('STATUS'); assert(serial.includes('REF=0 BUSY=0 MAP=0'));
+  console.log('PASS STOP cancels OFFSET and invalidates map/reference');
+
+  trackBoard = false;
+  id = request('REF'); expectDone(id, 'REF', 55000);
+  trackBoard = true;
   map([35]);
   const stopId = request('CARRY 35 64 79680800');
   until(() => relayHigh, 9000);
   id = request('STOP');
   expectDone(id, 'STOP');
   assert(serial.includes('@' + stopId + ' ERR CANCELED'));
-  const stopCounts = counts(); run(700);
+  stopCounts = counts(); run(700);
   assert.deepEqual(counts(), stopCounts); assert(!relayHigh);
   id = request('STATUS'); assert(serial.includes('REF=0 BUSY=0 MAP=0'));
   console.log('PASS STOP cancels CARRY with one terminal error');
+
+  trackBoard = false;
+  id = request('REF'); expectDone(id, 'REF', 55000);
+  trackBoard = true;
+  map([7, 6, 72]);
+  offset(7, 'NE', 'OUT');
+  expectedRoute = [offsetPointMm(7, 'NE'), ...routeMm('F1G2E4C2B1').slice(1)];
+  trackPiece = true; relayEvents = [];
+  const offsetCarryStopId = request('CARRY_OFFSET 7 NE 5 F1G2E4C2B1');
+  until(() => relayHigh, 9000);
+  id = request('STOP'); expectDone(id, 'STOP');
+  assert(serial.includes('@' + offsetCarryStopId + ' ERR CANCELED'));
+  stopCounts = counts(); run(700);
+  assert.deepEqual(counts(), stopCounts); assert(!relayHigh);
+  trackPiece = false;
+  id = request('STATUS'); assert(serial.includes('REF=0 BUSY=0 MAP=0'));
+  console.log('PASS STOP cancels CARRY_OFFSET and invalidates map/reference');
 
   // Homing uses the first raw contact, even a pulse shorter than board debounce.
   trackBoard = false;

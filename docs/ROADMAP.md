@@ -1,59 +1,120 @@
 # Roadmap
 
-The goal is a full physical game with perimeter parking and recoverable motion. The user accepts the physical game, board reset, and fault recovery after a 126-ply GUI draw and a recovered return to all 32 starting pieces. Longer runs work overall. Long crowded horizontal carries can disturb off-center neighbors; the host now favors detours, pending a loaded trial. The PTFE trial is closed. Electrical reset diagnosis remains deferred.
+The goal is a full physical game with perimeter parking and recoverable motion.
+The user accepts the physical game, reset, and recovery after a 126-ply GUI draw
+and return of all 32 pieces. New crowded-motion and delivery refinements still
+need loaded trials; electrical reset diagnosis remains deferred.
+
+## Milestones
 
 | Stage | Status and remaining evidence |
 | --- | --- |
-| 0. Foundation | Complete: integrated repo retains the reference history, firmware snapshot, provenance, and host/Uno ownership. |
-| 1. Hardware reliability | Deferred: diagnose the reported magnet-release reset and verify relay supply, suppression, grounding, and limit wiring with logs ([issue #1](https://github.com/SagarsGitHub/chess-table/issues/1)). |
-| 2. Serial link | Complete in software and simulation: framed commands, capabilities, IDs, ACK/completion/fault handling, STOP, timeouts, and reboot detection. |
-| 3. Motion and parking | Host/Uno route and simulator matrices pass; longer loaded runs work overall. Physical trial of crowded-horizontal detours and all-region/all-slot coverage remain ([issue #2](https://github.com/SagarsGitHub/chess-table/issues/2)). |
-| 4. Physical game and reset | Accepted by user: 126-ply game, reset to 32 starting pieces, and recovery. Promotion stand-in over later moves/capture and interrupted-capture specifics remain unrecorded edge cases. |
+| 0. Foundation | Complete: integrated reference history, firmware snapshot, provenance, and host/Uno ownership. |
+| 1. Hardware reliability | Deferred: diagnose magnet-release resets, relay supply/suppression, grounding, and limit wiring with logs ([issue #1](https://github.com/SagarsGitHub/chess-table/issues/1)). |
+| 2. Serial link | Complete in software/simulation: framed commands, IDs, capabilities, ACK/completion/fault handling, STOP, timeouts, and reboot detection. |
+| 3. Motion and parking | Software matrices pass and longer loaded runs work overall. Crowded detours, reversible offsets, and all-region/all-slot physical coverage remain ([issue #2](https://github.com/SagarsGitHub/chess-table/issues/2)). |
+| 4. Physical game and reset | Accepted: 126-ply game, reset, and recovery. Later promoted-pawn use/capture and interrupted-capture recovery remain unrecorded. |
 
-Run from `C:\Users\sagar\Documents\Coding\chess-table` (`/mnt/c/Users/sagar/Documents/Coding/chess-table` in WSL). The [CLI](STAGE4_TEST_GAME.md) and [GUI](GUI_GAME.md) runbooks have WSL, USB, Stockfish, and recovery commands. The host performs `HOME` or `REF`, reads live `GEOM`, and sends `MAP`; no separate Serial Monitor preparation is needed.
+Run from the authoritative checkout, `C:\Users\sagar\Documents\Coding\chess-table`
+(`/mnt/c/Users/sagar/Documents/Coding/chess-table` in WSL). Use the
+[quick start](QUICK_START.md), [CLI runbook](STAGE4_TEST_GAME.md), or
+[GUI runbook](GUI_GAME.md). The host handles `HOME`/`REF`, live `GEOM`, and `MAP`.
 
-## Physical progress recorded 2026-10-05
+## Physical progress (recorded 2026-10-05)
 
-| Saved run | Evidence and caveat |
+| Saved run | Evidence and recovery status |
 | --- | --- |
-| `computer/runs/physical-smoke-20261005-013125.json` | 16 plies, four parked pieces, 20/20 `DONE CARRY` replies and no controller error. Four `!BOOT` notices span connection sessions, so this does not establish reset-free running. A copied-state knight preflight required the tight-route fallback; the physical checkpoint was unchanged. |
-| `computer/runs/self-play-physical-20261005-020112.json` | 155 plies, 24 parked pieces, 181 completed carries, and 17 clearance overrides. Ply 156 (`h5h4`) remains `in_flight` after STOP. **Inspect and reconcile its piece and magnet position before resuming this file.** |
-| `computer/runs/gui-physical-20261005-152550.json` | 126-ply draw, 20 parked pieces. Reset first found a queen/bishop/rook exit cycle during preflight; interior staging then enabled completion. Its log records 32 reset carry requests, 31 `DONE CARRY` replies, one `ERR MOTION`, reboot, and reconciliation. The saved state has all 32 pieces home and parking empty. The user accepts this game, reset, and recovery. The fault's electrical cause is unverified. |
+| `computer/runs/physical-smoke-20261005-013125.json` | 16 plies, four parked pieces, 20/20 `DONE CARRY`, no controller error. Four connection-session `!BOOT` notices mean this is not reset-free evidence. |
+| `computer/runs/self-play-physical-20261005-020112.json` | 155 plies, 24 parked pieces, 181 completed carries, 17 clearance overrides. **Ply 156 (`h5h4`) remains `in_flight` after STOP. Inspect and reconcile its piece and magnet position before resuming this file.** |
+| `computer/runs/gui-physical-20261005-152550.json` | Accepted 126-ply draw and reset: 20 parked pieces; interior staging resolved a parking-exit cycle. Reset logged 32 carry requests, 31 completions, one `ERR MOTION`, reboot, and reconciliation. Saved state has all 32 pieces home and parking empty; electrical cause is unverified. |
 
-Software evidence includes 141-ply and 228-ply Stockfish self-play simulations, with no route or controller simulation failures. Neither simulation establishes physical promotion or electrical reliability.
+Stockfish self-play simulations reached 141 and 228 plies without route/controller
+failures. GUI simulations also covered capture/reset, castling, en passant,
+promotion, restart, STOP/reconcile, and game end. These establish no physical
+promotion or electrical reliability.
 
-## Physical refinements
+## Constraints and refinements awaiting physical evidence
 
-- Diagonal grid legs and distance/turn-aware routing replaced circuitous paths. The host requires Uno `CARRY_DIAG`; software tests show straight `c1h6` and `e2g4` paths while occupied centers remain blocked.
-- Loaded motion uses 50 mm/s at 400 mm/s², or 30 mm/s at 250 mm/s² on horizontal grid legs next to occupied squares. Compiled motor simulation verified both profiles; the user reports longer physical runs work overall.
-- Board reset preflights the full return, checkpoints every transfer, and creates a new game only after all 32 pieces are home. Keeping parked pieces retrievable takes precedence; among safe, routable returns, the order now favors rooks, knights, bishops, kings and queens, then pawns. An interior square can temporarily stage a blocker when needed. Earlier simulations, before this order change, improved reset plans from 15 to 12 transfers on the 16-ply checkpoint and 33 to 32 on the 155-ply checkpoint. The recovered 126-ply physical reset is accepted; the new order still needs a loaded trial.
+- **Expected state and recovery:** the board has no sensors. GUI and CLI share
+  one runner, serial owner, and checkpoints. Matched `DONE CARRY` or
+  `DONE CARRY_OFFSET` advances expected occupancy; it cannot verify delivery.
+  Inspect/reconcile interrupted or uncertain actions before another move, and
+  preserve `computer/runs/` checkpoints and serial logs.
+- **Routing:** measured travel bounds and the Uno's 12-waypoint cap always apply.
+  Detour costs and tight-route retries are routing choices, not physical clearance
+  guarantees. At 31.25 mm pitch, centered 18 mm pieces leave only 13.25 mm between
+  them; off-center neighbors narrow it further. Diagonal routes require
+  `CARRY_DIAG`. Loaded profiles are 50 mm/s at 400 mm/s², or 30 mm/s at 250 mm/s²
+  on crowded horizontal grid legs.
+- **Delivery extension:** board-square carries and `OFFSET` keep the magnet on
+  0.20 pitch beyond the nominal target: 6.25 mm at measured pitch. If that exceeds
+  travel bounds, retry at 5.625 mm; reject if still outside. Parking deliveries have no
+  extension, and encoded endpoints/inventory stay nominal. Host and firmware
+  preflight the extra segment: firmware checks 18 mm clearance from nominal `MAP`
+  centers, and the host also checks displaced pieces. The user reports a favorable first trial;
+  quantitative centering and longer-run evidence remain pending.
+- **Crowded moves and castling:** plans can stage/restore a blocker or offset up
+  to two standing neighbors within their squares. Castling uses rook
+  `OFFSET OUT`, king carry, then direct `CARRY_OFFSET` from the rook's corner;
+  a nearby pawn can be staged. Every action is preflighted/checkpointed.
+  Crowded knight openings, midgame moves, capture-parking legs, and these new
+  offset/castling plans are software-tested; loaded acceptance remains pending.
+- **Reset:** preflight the full return and create a new game only after 32 pieces
+  are home. Retrievability comes first; safe returns favor rooks, knights,
+  bishops, kings/queens, then pawns, with staging or reversible offsets as needed.
+  The earlier recovered physical reset is accepted; the new order/offsets need
+  a loaded trial.
+- **Promotion:** no spare pieces. The pawn remains the physical stand-in for its
+  selected legal type and is parked if captured. Checkpoints/GUI preserve both
+  identities; no replacement or routine per-move confirmation is required.
+- **Friction:** the ferrite rod contacts the glass. PTFE dry lube did not help and
+  is discontinued. If revisited, trial one thin skid or stable three-pad base;
+  measure slide force, grip, rocking, and glass marks. Thickness may weaken grip.
 
-The ferrite rod under each piece is the glass contact point. PTFE dry lube did not help and is discontinued. If friction work resumes, test one piece with a thin skid or stable three-pad base, measuring slide force, magnet grip, rocking, and glass marks before changing the set. Added thickness may weaken magnetic coupling.
+## Planned glass fabrication and remote games
 
-At 31.25 mm pitch, two centered 18 mm standing pieces leave a 13.25 mm gap, already smaller than the 18 mm moving footprint. Off-center pieces narrow it further. The host now adds cumulative cost to crowded horizontal edges, favoring a detour or shorter exposed passage while preserving travel and waypoint limits. Replanning a logged `h3` to `c1` carry replaced a 93.75 mm two-sided horizontal leg with a six-waypoint route without one. This is software evidence; the new route still needs a loaded trial.
+| Roadmap item | Work and acceptance evidence |
+| --- | --- |
+| 1. Laser-etched glass board | Mirrored 1:1 underside SVG/DXF and reverse replacement template: grid/orientation, measured glass datums, drill centers/diameters. `GEOM` does not measure glass outline or holes. Require a printed alignment proof and replacement-board test fit before fabrication. |
+| 2. Aina local command path | Opt-in authenticated loopback API and typed [aina_core](https://github.com/SagarsGitHub/aina_core) adapter. Host retains rules, inventory, checkpoints, Stockfish, and serial ownership. Acceptance covers manual/Stockfish with either human color, expression resolution, status/stop, duplicate/restart replay, stale/altered/wrong-game rejection, and local fault recovery. Remote reset/reconcile remains unavailable. See [the contract](REMOTE_AINA.md#local-api-contract) and status below. |
+| 3. Completed Chess.com replay | Read-only PubAPI; validated standard-chess PGN bound to source game ID, move prefix, and result. Require simulated replay/restart without duplicate moves and preservation of the source result, then an attended physical replay after loaded-motion trials. |
+| 4. Live Chess.com games | Obtain official connected-board/OAuth access; define turn, clock, position, submission, and manual fallback for unroutable moves. Use an engine-free online human mode. Acceptance covers provider versus physical completion, network loss, stale/duplicate events, clock delay, and recovery; no Stockfish or suggestions in ongoing human games. |
 
-The user also reports that a crowded knight carry can pick up a neighboring piece while leaving the knight behind. The exact route and point of wrong pickup are not yet recorded. Capture the occupancy, route, clearance-override status, and observed pickup timing before changing the magnetic or routing model.
+## Aina status
 
-## Full-game GUI
+**Maintenance:** typed request/session
+modules separate validation and persisted policy from the execution worker.
+Schema 6 explicitly migrates checkpoints and validates receipt/resolution
+integrity. Aina-bound games reject browser moves; missing Stockfish configuration
+returns a structured error without private paths or a new binding. Validation:
+**248 host tests**, including HTTP stop/reopen/resume and malformed input;
+**14 HTTP tests on Windows**; **56 shared speech cases** with Aina.
 
-The GUI and CLI share the same game runner, checkpoints, routing, Stockfish, and serial owner. The GUI supports human/Stockfish, manual, and self-play games; displays expected board and P00–P31 parking locations, promoted-pawn stand-ins, motion, and faults; and offers STOP, reconciliation, and midgame board reset. Human moves are entered explicitly because the table has no sensors. A matched `DONE CARRY` advances expected state without a routine confirmation prompt.
+**Observed physical acceptance — October 11, 2026:** Render health confirmed
+`6479b21`. Windows-origin Aina commands routed through the WSL companion to
+launch a physical host and start Stockfish with human White. `D2_D4` resolved
+to `d2d4` and its receipt committed; Stockfish replied `g8f6`, staging and restoring
+the g7 pawn. All four carries had matched ACK/DONE with no controller error.
+The user confirmed the pawn on d4, knight on f6, g7 pawn restored, and neighbors
+undisturbed. The schema-6 checkpoint `chess-physical-20261011-171904-76335707.json`
+returned to White at ply 2 without pending motion or error. The prior simulated
+checkpoint was preserved. Broader loaded trials remain below.
 
-Simulation covered manual capture/reset, castling, en passant, promotion stand-ins, restart, STOP/reconcile, and Stockfish self-play through game end (151 and 169 plies). The later 126-ply physical GUI game and recovered reset are accepted. Physical promotion through later use/capture, all-slot coverage, and interrupted-capture recovery remain unrecorded. The [GUI runbook](GUI_GAME.md) has launch and recovery steps.
-
-## Planned glass fabrication and Aina integration
-
-| Roadmap item | Planned work | Acceptance evidence |
-| --- | --- | --- |
-| 1. Laser-etched glass board | Create mirrored, full-size underside artwork and a separate reverse replacement-board template. Include grid/orientation, measured glass datums, and clearly marked drill-hole centers and diameters; `GEOM` does not measure the glass outline or holes. | Versioned 1:1 SVG/DXF files, a printed alignment proof, and a replacement-board test fit before fabrication. |
-| 2. Aina and Chess.com games | Add a typed local host control/status API and an [aina_core](https://github.com/SagarsGitHub/aina_core) adapter. The chess host retains rules, inventory, checkpoints, and serial ownership. Begin with read-only Chess.com completed-game retrieval/replay; live move submission requires official OAuth/connected-board access and must not use Stockfish in online human games. | Aina starts/resumes and queries a local game without duplicate moves after restart, surfaces faults for reconciliation, and replays a completed Chess.com game. Live turn/clock/position sync and submission need separate authorized testing. |
+Earlier evidence includes physical `b1c3`/`d7d5` integration on October 10 and
+real Stockfish with simulated motors for manual mode, both human colors, and
+request replay. Private request evidence remains outside the repo; setup and
+recovery are in [REMOTE_AINA.md](REMOTE_AINA.md).
 
 ## Immediate next actions
 
-1. Try the new route preference on the physical board, starting with logged `h3` to `c1` and other long crowded passages. With neighbors slightly off-center, record the route, contact/displacement, slip, and delivery. Loaded trial evidence is still missing.
-2. When convenient, cover a promoted pawn's later move and capture, interrupted-capture recovery after victim parking, and untested parking slots/board regions. Core game/reset/recovery acceptance remains recorded.
-3. Before reopening the old 155-ply checkpoint, reconcile its canceled `h5h4` carry and magnet position. Later successful runs do not resolve that saved in-flight state.
-4. Keep electrical diagnosis deferred. When resumed, record the relay, magnet supply/current, wiring, and serial log around the reported release reset.
-
-## Fixed promotion rule
-
-There are no spare promotion pieces. The original pawn stays on the board and later moves as the physical stand-in; chess rules and Stockfish use its selected promoted type. Capture parks that pawn. Checkpoints and the GUI retain both physical and legal identities; no piece swap or per-move confirmation is required.
+1. Continue attended loaded trials with `CARRY_OFFSET` and `OVER20`: three-action
+   kingside and five-action crowded castles; staged midgame moves; one-/two-neighbor
+   offset bundles in play/reset; `h3`→`c1` detour with slightly off-center neighbors.
+   Inspect pickup/contact/staging/delivery after each action and measure nominal
+   versus actual landing after 6.25/5.625 mm extensions.
+2. Record later promoted-pawn moves/capture, interrupted-capture recovery after
+   victim parking, and untested parking slots/board regions.
+3. Reconcile the old 155-ply checkpoint's canceled `h5h4` carry and magnet before
+   reopening it. Later successful games do not resolve its saved uncertainty.
+4. Keep electrical diagnosis deferred. When resumed, capture relay, magnet
+   supply/current, wiring, and serial evidence around the reported release reset.

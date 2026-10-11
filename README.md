@@ -1,22 +1,30 @@
 # Chess Table
 
-Python host and Arduino Uno firmware for an automated chessboard with 32 perimeter parking slots for captured pieces. The host owns chess rules, Stockfish, routes, and checkpoints; the Uno executes bounded motor and magnet commands. The board has no piece sensors. Human moves are entered in the GUI or CLI, and an interrupted carry requires physical inspection before play resumes.
+Python host and Arduino Uno firmware for an automated chessboard with 32 perimeter parking slots. The host owns chess rules, Stockfish, routing, and checkpoints; the Uno controls motors and the magnet.
+
+**The board has no piece sensors.** Enter moves in software and let the table carry the pieces. Inspect and reconcile any interrupted or uncertain carry before another move. Preserve checkpoints and serial logs in `computer/runs/`.
+
+## Start from PowerShell
+
+Complete the [one-time setup](docs/QUICK_START.md#once-per-machine), then run from the repository root:
+
+```powershell
+.\Play-ChessTable.ps1                     # Physical host with Aina enabled
+.\Start-ChessTable.ps1 -EnableAina        # Simulation with Aina enabled
+```
+
+## Start on Linux or in WSL
+
+```bash
+./Play-ChessTable.sh                     # Physical host with Aina enabled
+./Start-ChessTable.sh --enable-aina      # Simulation with Aina enabled
+```
+
+Keep the terminal open. Follow the [quick start](docs/QUICK_START.md) to start GUI or Aina play and resume the exact saved checkpoint.
 
 ## Status
 
-The user accepts physical play, board reset, and fault recovery after a 126-ply GUI game and a recovered reset to all 32 starting pieces. Longer runs work overall. Long horizontal carries through crowded pieces can still disturb off-center neighbors; the host now favors detours, pending a loaded trial. Physical promotion and full parking-slot coverage remain unrecorded. The PTFE trial is closed, and electrical reset diagnosis is deferred. See the [roadmap](docs/ROADMAP.md).
-
-## Start in WSL
-
-Use the Coding checkout in Ubuntu WSL 2:
-
-```bash
-cd /mnt/c/Users/sagar/Documents/Coding/chess-table/computer
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-```
-
-For the browser game, follow the [GUI runbook](docs/GUI_GAME.md). For CLI smoke tests, Stockfish self-play, USB attachment, and recovery, use the [physical test runbook](docs/STAGE4_TEST_GAME.md). A new game needs a fresh checkpoint filename; `--resume` uses an existing one. The host performs `HOME` or `REF`, reads live `GEOM`, and sends `MAP`; it does not need a separate Serial Monitor setup step.
+See the [roadmap](docs/ROADMAP.md) for accepted physical tests and remaining work.
 
 For Linux startup and authenticated Aina control, use `Start-ChessTable.sh`
 and the [Aina setup guide](docs/REMOTE_AINA.md). The launcher starts the host;
@@ -24,14 +32,13 @@ game play remains stopped until started through the GUI or Aina.
 
 ## Repository map
 
-| Path | Purpose |
+| Guide | Purpose |
 | --- | --- |
-| [`computer/`](computer/README.md) | Game state, routing, Stockfish, GUI, serial transport, and host tests. |
-| [`firmware/`](firmware/README.md) | PlatformIO Uno code, pinout, calibration, and motor simulation. |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Host and Uno responsibilities and recovery boundary. |
-| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Framed serial commands and occupancy encoding. |
-| [`docs/ROUTING.md`](docs/ROUTING.md) | Route geometry and clearance behavior. |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Accepted milestones, physical evidence, and remaining work. |
-| [`legacy/chess_automated/`](legacy/chess_automated/) | Original reference project; see [provenance](docs/PROVENANCE.md). |
-
-The repository retains the history of [SagarsGitHub/chess_automated](https://github.com/SagarsGitHub/chess_automated) and the selected workspace firmware snapshot. The original client's serial protocol differs from the integrated host and Uno protocol; new work belongs in `computer/` and `firmware/`.
+| [Quick start](docs/QUICK_START.md) | Setup, launch, game commands, and recovery. |
+| [GUI runbook](docs/GUI_GAME.md) | Local play, inspection, and board reset. |
+| [Aina integration](docs/REMOTE_AINA.md) | Credentials, API contract, and troubleshooting. |
+| [Host](computer/README.md) / [firmware](firmware/README.md) | Development entry points and tests. |
+| [Architecture](docs/ARCHITECTURE.md) / [protocol](docs/PROTOCOL.md) | Ownership and wire contract. |
+| [Routing](docs/ROUTING.md) | Geometry and clearance limits. |
+| [Physical test runbook](docs/STAGE4_TEST_GAME.md) | USB, CLI tests, and interrupted-motion recovery. |
+| [Provenance](docs/PROVENANCE.md) | Original project and repository history. |

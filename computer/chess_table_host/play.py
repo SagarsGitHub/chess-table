@@ -23,7 +23,10 @@ from .game import (
     GameRunner, GameState, GameStateError, JsonGameStore, MoveDeferred,
     ReconciliationRequired,
 )
-from .planner import Action, BoardSquare, ManualReplacement, ParkingSlot, PlanError, Transfer
+from .planner import (
+    Action, BoardSquare, ManualReplacement, ParkingSlot, PieceOffset, PlanError,
+    RookOffset, Transfer,
+)
 from .routing import RouteError, RouteGeometry
 from .serial_link import ControllerGeometry, LinkError, open_serial
 from .session_lock import SessionLock
@@ -39,7 +42,13 @@ def _describe_action(action: Action) -> str:
     def label(location: BoardSquare | ParkingSlot) -> str:
         return location.name if isinstance(location, BoardSquare) else f"P{location.slot_id:02d}"
     if isinstance(action, Transfer):
+        if action.reason == "castle_rook_from_offset":
+            return (f"{action.piece} {label(action.source)} offset corner -> "
+                    f"{label(action.destination)} ({action.reason})")
         return f"{action.piece} {label(action.source)} -> {label(action.destination)} ({action.reason})"
+    if isinstance(action, (RookOffset, PieceOffset)):
+        motion = "nudge toward" if action.direction == "OUT" else "recenter from"
+        return f"{action.piece} {motion} {action.corner} corner within {action.square.name} ({action.reason})"
     return f"replace {action.pawn} with {action.replacement} at {action.square.name}"
 
 
@@ -67,47 +76,58 @@ def _show_physical_state(state: GameState) -> None:
               f"{len(pending.actions)}, phase={pending.phase}")
         print("Pending action:", _describe_action(pending.actions[pending.next_action]))
         if pending.active_route:
-            print("Last CARRY arguments:", " ".join(pending.active_route))
+            print("Last motion arguments:", " ".join(pending.active_route))
     if state.reset:
         reset = state.reset
-        print(f"Pending board reset: transfer {reset.next_action + 1}/"
+        print(f"Pending board reset: action {reset.next_action + 1}/"
               f"{len(reset.actions)}, phase={reset.phase}")
-        print("Pending transfer:", _describe_action(reset.actions[reset.next_action]))
+        print("Pending action:", _describe_action(reset.actions[reset.next_action]))
         if reset.active_route:
-            print("Last CARRY arguments:", " ".join(reset.active_route))
+            print("Last motion arguments:", " ".join(reset.active_route))
 
 
-def _reconcile_at_start(runner: GameRunner, *, automatic: bool = False) -> bool:
+def _reconcile_reset_at_start(runner: GameRunner, *, automatic: bool) -> bool:
+    """Resolve an interrupted reset before its remaining actions are sent."""
     reset = runner.state.reset
-    if reset:
-        uncertain = reset.phase != "ready"
-        _show_physical_state(runner.state)
-        if uncertain:
+    assert reset is not None
+    uncertain = reset.phase != "ready"
+    _show_physical_state(runner.state)
+    if uncertain:
+        action = reset.actions[reset.next_action]
+        if isinstance(action, PieceOffset):
+            source = "center" if action.direction == "OUT" else f"{action.corner} corner"
+            destination = f"{action.corner} corner" if action.direction == "OUT" else "center"
+            print(f"Inspect {action.piece} within {action.square.name} and nearby pieces.")
+            print(f"SOURCE: verify it at the {source}. DESTINATION: verify it at the {destination}.")
+        else:
             print("Inspect the last reset transfer and every affected square and parking slot.")
             print("SOURCE: restore its piece to the action source. DESTINATION: confirm it arrived.")
-            print("ABORT: manually restore the entire pre-reset game position.")
-            answer = input("Type SOURCE, DESTINATION, or ABORT after physical inspection: ").strip().lower()
-            if answer not in {"source", "destination", "abort"}:
-                raise ReconciliationRequired("no reset recovery outcome was selected")
-            if not _yes("Did you inspect and restore/verify the selected physical state?"):
-                raise ReconciliationRequired("physical state was not confirmed")
-            if answer == "abort":
-                runner.abort_reset_after_restore()
-                print("Board reset aborted; the pre-reset game checkpoint is restored.")
-                return False
-            else:
-                runner.resolve_uncertain_reset(answer)
-        elif not automatic:
-            print("Continuing the checkpointed board reset from its last completed transfer.")
-        _show_physical_state(runner.state)
-        if (uncertain or not automatic) and not _yes(
-            "Does the entire physical board and parking inventory match this checkpoint?"
-        ):
-            raise ReconciliationRequired("physical board does not match the saved reset checkpoint")
-        if runner.state.reset is None:
-            print("Board reset completed during reconciliation; the checkpoint is a fresh game.")
+        print("ABORT: manually restore the entire pre-reset game position.")
+        answer = input("Type SOURCE, DESTINATION, or ABORT after physical inspection: ").strip().lower()
+        if answer not in {"source", "destination", "abort"}:
+            raise ReconciliationRequired("no reset recovery outcome was selected")
+        if not _yes("Did you inspect and restore/verify the selected physical state?"):
+            raise ReconciliationRequired("physical state was not confirmed")
+        if answer == "abort":
+            runner.abort_reset_after_restore()
+            print("Board reset aborted; the pre-reset game checkpoint is restored.")
             return False
-        return True
+        runner.resolve_uncertain_reset(answer)
+    elif not automatic:
+        print("Continuing the checkpointed board reset from its last completed action.")
+    _show_physical_state(runner.state)
+    if (uncertain or not automatic) and not _yes(
+        "Does the entire physical board and parking inventory match this checkpoint?"
+    ):
+        raise ReconciliationRequired("physical board does not match the saved reset checkpoint")
+    if runner.state.reset is None:
+        print("Board reset completed during reconciliation; the checkpoint is a fresh game.")
+        return False
+    return True
+
+
+def _reconcile_move_at_start(runner: GameRunner, *, automatic: bool) -> bool:
+    """Resolve an interrupted move before its remaining actions are sent."""
     pending = runner.state.pending
     uncertain_at_start = pending is not None and pending.phase != "ready"
     if pending:
@@ -127,7 +147,19 @@ def _reconcile_at_start(runner: GameRunner, *, automatic: bool = False) -> bool:
                 raise ReconciliationRequired("no valid recovery choice was selected")
     elif pending:
         print("Inspect the last action and every affected square and parking slot.")
-        print("SOURCE: restore its piece to the action source. DESTINATION: confirm it arrived.")
+        action = pending.actions[pending.next_action]
+        if isinstance(action, (RookOffset, PieceOffset)):
+            source = "square center" if action.direction == "OUT" else f"{action.corner} corner"
+            destination = f"{action.corner} corner" if action.direction == "OUT" else "square center"
+            print(f"SOURCE: verify {action.piece} at {action.square.name} {source}.")
+            print(f"DESTINATION: verify {action.piece} at {action.square.name} {destination}.")
+        elif isinstance(action, Transfer) and action.reason == "castle_rook_from_offset":
+            corner = pending.active_route[1]
+            print(f"SOURCE: restore the rook to the {corner} corner within {action.source.name}.")
+            print(f"DESTINATION: verify the rook at {action.destination.name}.")
+            print("Inspect the castled king and nearby pieces for contact or displacement.")
+        else:
+            print("SOURCE: restore its piece to the action source. DESTINATION: confirm it arrived.")
         print("ABORT: manually restore the entire committed pre-move position.")
         answer = input("Type SOURCE, DESTINATION, or ABORT after physical inspection: ").strip().lower()
         if answer not in {"source", "destination", "abort"}:
@@ -144,6 +176,12 @@ def _reconcile_at_start(runner: GameRunner, *, automatic: bool = False) -> bool:
     ):
         raise ReconciliationRequired("physical board does not match the saved checkpoint")
     return True
+
+
+def _reconcile_at_start(runner: GameRunner, *, automatic: bool = False) -> bool:
+    if runner.state.reset is not None:
+        return _reconcile_reset_at_start(runner, automatic=automatic)
+    return _reconcile_move_at_start(runner, automatic=automatic)
 
 
 def _geometry_from_file(path: Path) -> ControllerGeometry:
@@ -186,7 +224,10 @@ def _connect_physical(
             on_open(link)
         print("Serial transcript:", serial_log)
         hello = link.hello()
-        required = {"STATUS", "HOME", "REF", "MAP", "CARRY", "CARRY_DIAG", "GEOM"}
+        required = {
+            "STATUS", "HOME", "REF", "MAP", "CARRY", "CARRY_OFFSET",
+            "CARRY_DIAG", "GEOM", "OFFSET", "OVER20",
+        }
         if not required.issubset(hello.capabilities):
             raise GameStateError(f"controller lacks {sorted(required - hello.capabilities)}")
         status = link.status()
@@ -222,7 +263,7 @@ def _feasible_engine_moves(runner: GameRunner, geometry: RouteGeometry) -> list[
 
 def _resolve_engine_path(configured: str | None) -> str:
     """Find a downloaded Stockfish binary without assuming an OS-specific name."""
-    default = Path.home() / "Documents" / "stockfish"
+    default = Path.home() / "Documents" / "Stockfish"
     choice = Path(configured).expanduser() if configured else default
     if configured and not choice.exists() and len(choice.parts) == 1:
         on_path = shutil.which(configured)
@@ -338,14 +379,20 @@ def _play_moves(args: argparse.Namespace, runner: GameRunner, link, geometry: Ro
                     continue
 
             def approve_route(action, route, wire) -> bool:
-                """Show the exact controller carry before optional supervision."""
+                """Show the exact controller motion before optional supervision."""
                 points = " -> ".join(f"({point.x},{point.y})" for point in route.points)
                 print("Route for", _describe_action(action), ":", points)
-                print("CARRY arguments:", " ".join(wire))
+                command = (
+                    "OFFSET" if isinstance(action, (RookOffset, PieceOffset)) else
+                    "CARRY_OFFSET" if action.reason == "castle_rook_from_offset" else
+                    "CARRY"
+                )
+                print(f"{command} arguments:", " ".join(wire))
                 if route.clearance_ignored:
                     print("CLEARANCE OVERRIDE: circular piece-footprint clearance was bypassed."
                           " Motion will continue on the occupied-center-safe route.")
                 return args.simulate or not getattr(args, "supervised", False) or _yes(
+                    "Start this piece nudge?" if isinstance(action, (RookOffset, PieceOffset)) else
                     "Start this transfer?"
                 )
 
@@ -410,25 +457,26 @@ def _run_reset(args: argparse.Namespace, runner: GameRunner, link, geometry: Rou
         if not actions:
             print("Board is already in the standard setup; checkpoint reset for a new game.")
             return
-        print(f"Board reset prepared: {len(actions)} transfers; full route preflight passed.")
+        print(f"Board reset prepared: {len(actions)} actions; full route preflight passed.")
     else:
-        print(f"Resuming board reset at transfer {runner.state.reset.next_action + 1}/"
+        print(f"Resuming board reset at action {runner.state.reset.next_action + 1}/"
               f"{len(runner.state.reset.actions)}.")
 
-    def approve_route(action: Transfer, route, wire) -> bool:
+    def approve_route(action: Transfer | PieceOffset, route, wire) -> bool:
         points = " -> ".join(f"({point.x},{point.y})" for point in route.points)
         print("Reset route for", _describe_action(action), ":", points)
-        print("CARRY arguments:", " ".join(wire))
+        print("OFFSET arguments:" if isinstance(action, PieceOffset) else "CARRY arguments:",
+              " ".join(wire))
         if route.clearance_ignored:
             print("CLEARANCE OVERRIDE: using the bounded occupied-center-safe route.")
-        return args.simulate or not args.supervised or _yes("Start this reset transfer?")
+        return args.simulate or not args.supervised or _yes("Start this reset action?")
 
-    def confirm(action: Transfer) -> bool:
+    def confirm(action: Transfer | PieceOffset) -> bool:
         if args.simulate:
             print("SIM CONFIRMED", _describe_action(action))
             return True
         if args.supervised:
-            return _yes(f"Confirm reset transfer: {_describe_action(action)}?")
+            return _yes(f"Confirm reset action: {_describe_action(action)}?")
         print("Controller DONE; advancing", _describe_action(action))
         return True
 
@@ -573,7 +621,7 @@ def _main(argv: list[str] | None = None) -> int:
         print("Required center distance:", geometry.required_center_distance_mm, "mm")
         print("Tight-route fallback:", "enabled" if args.allow_tight_routes else "disabled")
         if not args.simulate:
-            print("Physical advancement:", "supervised" if args.supervised else "automatic after DONE CARRY")
+            print("Physical advancement:", "supervised" if args.supervised else "automatic after matched DONE")
         if args.reset_board:
             _run_reset(args, runner, link, geometry)
         else:

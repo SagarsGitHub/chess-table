@@ -12,7 +12,7 @@ The reported physical calibration was:
 
 The host runs `REF` with saved calibration or `HOME` without it, then reads fresh `GEOM` and sends `MAP`. Use `--home` to force full calibration. No separate Serial Monitor command is needed. Record the live `GEOM` and serial transcript for each physical session.
 
-The measured board pitch is 31.25 mm; moving and standing pieces have 18 mm footprints. The configured 0 mm margin is provisional because centering, wobble, and path error have not been measured. Two standing pieces leave a 13.25 mm horizontal gap, less than an 18 mm moving piece. The host tries circular footprint clearance first. With `allow_tight_routes`, it may fall back to a route that avoids occupied centers but passes closer to pieces; the CLI prints `CLEARANCE OVERRIDE`. This never relaxes measured travel bounds, firmware limits, or the 12-waypoint cap. Use `--strict-clearance` to disable fallback for a session. Watch nearby pieces and keep the independent power cutoff available.
+The measured board pitch is 31.25 mm; moving and standing pieces have 18 mm footprints. The configured 0 mm margin is provisional because centering, wobble, and path error have not been measured. Two standing pieces leave a 13.25 mm horizontal gap, less than an 18 mm moving piece. The host tries circular footprint clearance first. Crowded moves, captures, and reset carries may use temporary checkpointed transfers or nudge one or two neighbors toward corners within their own squares, then recenter them after the intended carry. Castling uses `OFFSET OUT` within the rook's square and `CARRY_OFFSET` directly from that corner. Every staged, offset, and castling action requires measured clearance. Flash firmware with `CARRY_OFFSET` support before trying the shorter castling plan. A configured `allow_tight_routes` retry cannot override a modeled clearance violation, travel bounds, firmware limits, or the 12-waypoint cap. Use `--strict-clearance` to disable the retry for a session. Watch nearby pieces and keep the independent power cutoff available.
 
 The reported magnet-release reset remains tracked in [issue #1](https://github.com/SagarsGitHub/chess-table/issues/1); electrical diagnosis is deferred. A successful game command does not certify its root cause.
 
@@ -25,7 +25,7 @@ python3 -m venv .venv
 .venv/bin/python -m unittest discover -s tests -q
 ```
 
-The checked-in config has Windows defaults (`COM3` and `~/Documents/stockfish`). In WSL, pass the detected Linux port and set `engine_path` in the Stockfish examples to the installed executable. Each `--new` game needs a fresh state filename; `--resume` continues that file without replaying completed carries. Checkpoints and serial logs under `computer/runs/` are ignored by Git but should be retained as physical evidence.
+The checked-in config has Windows defaults (`COM3` and `~/Documents/Stockfish`). In WSL, pass the detected Linux port and set `engine_path` in the Stockfish examples to the installed executable. Each `--new` game needs a fresh state filename; `--resume` continues that file without replaying completed carries. Checkpoints and serial logs under `computer/runs/` are ignored by Git but should be retained as physical evidence.
 
 ### Connect the Uno to WSL for physical play
 
@@ -110,7 +110,7 @@ serial_port=/dev/ttyACM0  # replace with the detected WSL device
 cd ../computer
 ```
 
-Use `pio` instead of `.venv/bin/pio` if PlatformIO is already installed in WSL. The loaded carry profile is 50 mm/s at 400 mm/s²; magnet-on horizontal grid segments beside occupied squares use 30 mm/s at 250 mm/s². Unloaded travel and homing have separate profiles. Longer physical runs work overall, but crowded horizontal lanes can disturb off-center pieces. The host now favors detours; record contact, displacement, slip, and delivery during a loaded trial.
+Use `pio` instead of `.venv/bin/pio` if PlatformIO is already installed in WSL. The loaded carry profile is 50 mm/s at 400 mm/s²; magnet-on horizontal grid segments beside occupied squares use 30 mm/s at 250 mm/s². Unloaded travel and homing have separate profiles. Longer physical runs work overall, but crowded horizontal lanes can disturb off-center pieces. The host now favors detours and may preflight temporary neighbor offsets; record contact, displacement, slip, and delivery during a loaded trial.
 
 A short diagonal and reset trial clears the bishop's path to h6:
 
@@ -132,7 +132,7 @@ capture_state="runs/reset-capture-$(date +%Y%m%d-%H%M%S).json"
 .venv/bin/python -m chess_table_host.play --resume --reset-board --state "$capture_state" --port "$serial_port"
 ```
 
-Reset preflights the full return, archives the played checkpoint as `.before-reset-<UTC timestamp>.json`, and checkpoints each transfer. It clears the game only when all pieces are home. Parking exits take precedence: a return cannot close an available exit, and blocked slots are opened before the main return pass. Among safe, routable returns, the planner favors rooks, knights, bishops, kings and queens, then pawns. It may move a blocker temporarily to a vacant interior square when that opens a home or parking exit. Compare the proposed order, final board, and empty parking with the actual table.
+Reset preflights the full return, archives the played checkpoint as `.before-reset-<UTC timestamp>.json`, and checkpoints each action, including temporary offsets. It clears the game only when all pieces are home. Parking exits take precedence: a return cannot close an available exit, and blocked slots are opened before the main return pass. Among safe, routable returns, the planner favors rooks, knights, bishops, kings and queens, then pawns. It may move a blocker temporarily to a vacant interior square when that opens a home or parking exit. Compare the proposed order, final board, and empty parking with the actual table.
 
 ## Interruption, recovery, and evidence
 

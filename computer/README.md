@@ -1,74 +1,74 @@
 # Computer host
 
-`chess_table_host` owns chess rules, expected piece and parking locations, route
-planning, Stockfish, the local GUI, and checkpointed serial control. The Uno
-executes one validated carry at a time. The table has no piece sensors; a
-completed `CARRY` updates expected occupancy, while an uncertain transfer
-requires inspection and reconciliation.
+`chess_table_host` owns chess rules, expected physical inventory, routing,
+Stockfish, the GUI, and checkpointed serial control. The Uno executes bounded
+motion. The board has no piece sensors; completion updates expected occupancy.
+Uncertain motion requires inspection and reconciliation before another move.
 
 ## Code map
 
 | Module | Responsibility |
 | --- | --- |
-| `planner.py` | Legal UCI moves, capture order, parking choice, and pawn promotion stand-ins. |
-| `routing.py` | Bounded half-square carry paths checked against geometry and occupied locations. |
-| `physical.py` | Expected physical inventory, transfer application, and replay of stand-in pawns. |
-| `reset_plan.py` | Preflight of the complete board return, including staging when parked pieces block each other. |
+| `planner.py` | Legal moves, capture order, parking selection and promotion stand-ins. |
+| `routing.py` | Carry paths bounded by geometry, occupancy and clearance. |
+| `knight_stage.py` | Temporary blocker staging with strict routing on every leg. |
+| `offset_stage.py` / `corner_offset.py` | Reversible piece nudges and routing around displaced pieces. |
+| `physical.py` | Expected inventory, transfers and promotion stand-in replay. |
+| `reset_plan.py` | Preflight of the complete return to standard setup. |
 | `checkpoint.py` | Versioned, atomic game and physical-state persistence. |
 | `game.py` | Move/reset execution, commits, and fault reconciliation. |
-| `serial_link.py` / `wire.py` | Framed controller commands, replies, timeouts, and occupancy encoding. |
-| `host_config.py` / `link_adapters.py` | Shared settings validation, simulated carries, and durable serial logs. |
-| `play.py` / `gui.py` / `gui_http.py` | CLI, browser session, and HTTP entry points using the same `GameRunner`. |
-| `gui_static/gui_*.js` / `build_gui.py` | Browser model, view, and events; builds standalone `app.js`. |
-
-A capture parks its victim before moving the attacker; castling and en passant
-also use ordered transfers. A promoted pawn remains the physical pawn while
-chess rules treat it as its selected piece. Board reset restores all 32 original
-pieces from the checkpointed physical inventory before starting a fresh game.
-The host plans a complete move or reset before sending its first carry.
+| `protocol_limits.py` / `serial_link.py` / `wire.py` | Uno limits, framed transport, replies, timeouts and occupancy encoding. |
+| `host_config.py` / `link_adapters.py` | Configuration, simulation and durable serial logs. |
+| `play.py` / `gui.py` / `gui_http.py` | CLI and browser entry points using one `GameRunner`. |
+| `remote_http.py` / `remote_contract.py` / `remote_session.py` | Aina authentication, typed requests, source binding and position fences. |
+| `api_errors.py` | Structured refusals shared by HTTP adapters. |
+| `move_expression.py` | Speech cleanup and legal expression resolution. |
+| `gui_static/gui_*.js` / `build_gui.py` | Browser sources and generated `app.js`. |
 
 ## Configure and run
 
-Install [`requirements.txt`](requirements.txt) in a Python virtual environment.
-[`config.json`](config.json) defaults to COM3, Stockfish in
-`~/Documents/stockfish`, 18 mm moving and standing pieces, a 0 mm clearance
-margin, and tight-route fallback. On WSL, pass the detected `/dev/ttyACM*` or
-`/dev/ttyUSB*` port and the Linux-visible Stockfish path. The host reads fresh
-`GEOM` from the connected controller; a geometry fixture is for simulation.
+From `computer/`, activate a Python virtual environment and install dependencies:
 
-Use `python -m chess_table_host.play --help` for CLI options, including
-`--self-play`, `--manual-both`, `--reset-board`, `--resume`, and
-`--strict-clearance`. Use `python -m chess_table_host.gui --help` for the
-browser game. Exact WSL setup, USB attachment, and physical recovery commands
-are in the [stage 4 runbook](../docs/STAGE4_TEST_GAME.md) and
-[GUI runbook](../docs/GUI_GAME.md).
+```text
+python -m pip install -r requirements.txt
+python -m chess_table_host.play --help
+python -m chess_table_host.gui --help
+```
 
-Normal physical play advances after an ID-matched `DONE CARRY`; it does not
-pause after every move. `--supervised` adds prompts for deliberate testing.
-The host records TX/RX frames beside a physical checkpoint as
-`<state-name>.serial.jsonl`. Do not replay a stopped, timed-out, or faulted
-carry automatically: inspect its source, destination, parking, and magnet
-position, then reconcile the saved state. The GUI shows expected locations,
-not sensed piece positions.
+[`config.json`](config.json) supplies defaults. Override the serial port and
+Stockfish path for the current machine; WSL needs Linux-visible paths.
+Physical play reads live `GEOM` and requires firmware capability `OVER20`;
+geometry fixtures are for simulation. Use the [quick start](../docs/QUICK_START.md)
+for launch commands, [GUI guide](../docs/GUI_GAME.md) for browser play, and
+[physical runbook](../docs/STAGE4_TEST_GAME.md) for USB setup and recovery.
+
+## Local Aina control API
+
+Enable the separate loopback API with `--remote-token-file PATH`; its default
+port is 8766. The private token must contain 32–512 printable ASCII characters.
+See the [local API contract](../docs/REMOTE_AINA.md#local-api-contract) for
+authentication, routes, payloads and recovery.
+
+Aina supports manual moves from both sides or Stockfish with the human as White
+or Black. The host persists source identity, mode/color, legal resolutions and
+receipts. Aina-bound games accept moves through that API; the GUI retains local
+STOP, reset and reconciliation controls. A move's acceptance means durable
+preparation. Wait for its committed receipt and status `can_move` before the
+next human move, including Stockfish's reply.
 
 ## Checks and limits
 
-From `computer/` run `python -m unittest discover -s tests -q`. The tests
-cover chess special moves, routing and clearance fallback, checkpoint
-migration, serial faults, reset cycles, and GUI flows. The three tracked host
-JSON files serve different purposes: runtime defaults, measured simulation
-geometry, and a reset regression fixture. `runs/*.json` are ignored physical
-or simulated checkpoints; preserve physical runs and their serial logs.
+From `computer/`, run `python -m unittest discover -s tests -q` in the project
+environment. After editing `gui_static/gui_*.js`, run `python build_gui.py` to
+regenerate served `gui_static/app.js`.
 
-After editing a `gui_static/gui_*.js` source file, run `python build_gui.py`
-from `computer/` to regenerate the standalone `gui_static/app.js`. The
-standalone file remains compatible with an already-running GUI server.
+Preserve `runs/` checkpoints and their `<state-name>.serial.jsonl` logs.
+Resume the existing checkpoint after inspection; never automatically replay
+an interrupted carry or create a fresh checkpoint to hide uncertainty.
 
-The clearance override can route closer to standing pieces after strict
-clearance fails, while still avoiding occupied centers and enforcing the Uno's
-12-waypoint and measured travel limits. The planner strongly penalizes long
-crowded horizontal legs. Neither choice proves physical clearance.
-Standard chess is supported; Chess960 castling and automatic piece sensing are
-out of scope. See the [architecture](../docs/ARCHITECTURE.md),
-[routing notes](../docs/ROUTING.md), and [roadmap](../docs/ROADMAP.md) for the
-physical acceptance record.
+Every route obeys measured travel bounds and the Uno's 12-waypoint cap.
+Tight-route fallback and crowded-horizontal cost are planning choices, not
+physical clearance guarantees; modeled clearance violations still block motion.
+Standard chess is supported; Chess960 and piece sensing are out of scope.
+See [architecture](../docs/ARCHITECTURE.md), [routing](../docs/ROUTING.md),
+the [wire contract](../docs/PROTOCOL.md), and [roadmap](../docs/ROADMAP.md).

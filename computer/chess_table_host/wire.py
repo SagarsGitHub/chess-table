@@ -9,10 +9,10 @@ from __future__ import annotations
 import chess
 
 from .planner import BoardSquare, ParkingInventory, ParkingSlot
+from .protocol_limits import MAX_CARRY_WAYPOINTS
 from .routing import CarryRoute, location_point
 
 
-MAX_CARRY_WAYPOINTS = 12
 _BASE17 = "0123456789ABCDEFG"
 
 
@@ -27,11 +27,13 @@ def location_id(location: BoardSquare | ParkingSlot) -> int:
 
 
 def encode_carry(route: CarryRoute, *, max_waypoints: int = MAX_CARRY_WAYPOINTS) -> tuple[str, str, str]:
-    """Build the three ASCII arguments for ``CARRY``.
+    """Build the source, destination, and waypoint arguments for a carry.
 
     Waypoints include the source and destination. Each x/y coordinate is one
     base-17 character (0..9, A..G for 10..16), making 12 points only 24 bytes.
-    The firmware must validate the path again before energizing the magnet.
+    For ``CARRY_OFFSET``, the source-center point is an encoding anchor; the
+    caller inserts the corner argument and firmware picks up at that corner.
+    Firmware validates the path again before energizing the magnet.
     """
 
     if not isinstance(route, CarryRoute):

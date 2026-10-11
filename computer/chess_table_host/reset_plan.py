@@ -12,16 +12,31 @@ from typing import Callable
 import chess
 
 from .game_errors import GameStateError
-from .physical import _accessible_parking, _apply_action, _board_pieces, _parking_approaches, _piece_at
-from .planner import BoardSquare, ParkingSlot, Transfer
-from .routing import CarryRoute, NoRouteError, RouteError, RouteGeometry, location_point
+from .physical import (
+    _accessible_parking, _apply_action, _board_pieces, _occupied_slots,
+    _occupied_squares, _parking_approaches, _piece_at,
+)
+from .planner import BoardSquare, ParkingSlot, PieceOffset, Transfer
+from .protocol_limits import MAX_CARRY_WAYPOINTS
+from .routing import (
+    CarryRoute, NoRouteError, RouteError, RouteGeometry, location_point,
+    plan_transfer_route,
+)
+
+
+ResetAction = Transfer | PieceOffset
+ClearanceBundle = Callable[
+    [Transfer, dict[str, str], list[str | None], RouteGeometry],
+    tuple[ResetAction, ...] | None,
+]
 
 
 def plan_reset(
     squares_before: dict[str, str], slots_before: list[str | None],
     geometry: RouteGeometry,
     route_transfer: Callable[[Transfer, dict[str, str], list[str | None], RouteGeometry], CarryRoute],
-) -> tuple[Transfer, ...]:
+    *, plan_clearance_bundle: ClearanceBundle | None = None,
+) -> tuple[ResetAction, ...]:
     """Plan every carry against a copied inventory before any motor command.
 
     Parking exits stay open while safe, routable returns follow piece priority.
@@ -35,7 +50,7 @@ def plan_reset(
     if squares == target and not any(slots):
         return ()
 
-    actions: list[Transfer] = []
+    actions: list[ResetAction] = []
     staging = tuple(
         f"{file}{rank}" for rank in "3456" for file in "abcdefgh"
     )
@@ -63,13 +78,75 @@ def plan_reset(
         if piece is None or _piece_at(squares, slots, destination) is not None:
             return False
         transfer = Transfer(piece, source, destination, "reset_board")
-        try:
-            route_transfer(transfer, squares, slots, geometry)
-        except RouteError:
-            return False
+        selected: tuple[ResetAction, ...] | None = None
+        if plan_clearance_bundle is not None:
+            # Probe measured clearance without the caller's optional tight
+            # fallback. Offset bundles are only useful for a strict failure.
+            try:
+                plan_transfer_route(
+                    transfer,
+                    occupied_squares=_occupied_squares(squares),
+                    occupied_parking_slots=_occupied_slots(slots),
+                    geometry=geometry, max_waypoints=MAX_CARRY_WAYPOINTS,
+                )
+            except RouteError:
+                proposed = plan_clearance_bundle(transfer, squares, slots, geometry)
+                if proposed is not None:
+                    selected = validate_bundle(transfer, proposed)
+            else:
+                selected = (transfer,)
+        if selected is None:
+            try:
+                route_transfer(transfer, squares, slots, geometry)
+            except RouteError:
+                return False
+            selected = (transfer,)
         _apply_action(squares, slots, transfer)
-        actions.append(transfer)
+        actions.extend(selected)
         return True
+
+    def validate_bundle(
+        transfer: Transfer, proposed: tuple[ResetAction, ...],
+    ) -> tuple[ResetAction, ...]:
+        """Keep a temporary nudge bundle atomic and inventory neutral."""
+        if not isinstance(proposed, tuple):
+            raise GameStateError("reset clearance bundle must be a tuple")
+        trial_squares, trial_slots = dict(squares), list(slots)
+        active: dict[BoardSquare, tuple[str, str]] = {}
+        out_count = 0
+        carried = False
+        for action in proposed:
+            if isinstance(action, PieceOffset):
+                if _piece_at(trial_squares, trial_slots, action.square) != action.piece:
+                    raise GameStateError("reset offset piece differs from physical inventory")
+                identity = (action.piece, action.corner)
+                if action.direction == "OUT":
+                    if carried or action.square in active:
+                        raise GameStateError("reset clearance offsets must precede the carry")
+                    active[action.square] = identity
+                    out_count += 1
+                elif not carried or active.get(action.square) != identity:
+                    raise GameStateError("reset clearance restoration has no matching nudge")
+                else:
+                    del active[action.square]
+            elif isinstance(action, Transfer):
+                if carried or not active or (
+                    action.piece, action.source, action.destination
+                ) != (transfer.piece, transfer.source, transfer.destination) or (
+                    action.reason != "clearance_offset_move"
+                ):
+                    raise GameStateError("reset clearance bundle must carry the requested piece once")
+                _apply_action(trial_squares, trial_slots, action)
+                carried = True
+            else:
+                raise GameStateError("reset clearance bundle contains an unsupported action")
+        if not carried or active or not 1 <= out_count <= 2:
+            raise GameStateError("reset clearance bundle needs one or two restored nudges")
+        expected_squares, expected_slots = dict(squares), list(slots)
+        _apply_action(expected_squares, expected_slots, transfer)
+        if trial_squares != expected_squares or trial_slots != expected_slots:
+            raise GameStateError("reset clearance bundle changes the expected inventory")
+        return proposed
 
     def accessible_after(transfer: Transfer) -> set[int]:
         """Probe parking exits on copies; candidate checks never mutate the plan."""
@@ -107,6 +184,21 @@ def plan_reset(
                 index,
             ),
         )
+
+    def ordered_return_sources(
+        board_names: list[str], parked_indices: list[int],
+    ) -> tuple[BoardSquare | ParkingSlot, ...]:
+        """Interleave returns by piece priority, with board pieces winning ties."""
+        choices = [
+            (piece_priority(squares[name]), 0, order, BoardSquare(name))
+            for order, name in enumerate(board_names)
+        ]
+        choices.extend(
+            (piece_priority(slots[index]), 1, order, ParkingSlot(index))
+            for order, index in enumerate(parked_indices)
+        )
+        choices.sort(key=lambda choice: choice[:3])
+        return tuple(choice[3] for choice in choices)
 
     def try_parked_home(index: int, accessible: set[int]) -> bool:
         """Return a parked piece only if all other parked exits stay open."""
@@ -161,14 +253,7 @@ def plan_reset(
         # A blocked board rook must not make a reachable parked rook wait
         # behind a pawn on another wrong home square.
         accessible = _accessible_parking(slots, squares)
-        choices = sorted(
-            [(piece_priority(squares[name]), 0, order, BoardSquare(name))
-             for order, name in enumerate(wrong_homes)] +
-            [(piece_priority(slots[index]), 1, order, ParkingSlot(index))
-             for order, index in enumerate(parked_candidates())],
-            key=lambda choice: choice[:3],
-        )
-        for _, _, _, source in choices:
+        for source in ordered_return_sources(wrong_homes, parked_candidates()):
             if isinstance(source, BoardSquare):
                 moved = try_direct_home(source.name)
             else:
@@ -214,15 +299,8 @@ def plan_reset(
             key=lambda name: (piece_priority(squares[name]), name),
         )
         parked_choices = parked_candidates()
-        choices = sorted(
-            [(piece_priority(squares[name]), 0, order, BoardSquare(name))
-             for order, name in enumerate(board_choices)] +
-            [(piece_priority(slots[index]), 1, order, ParkingSlot(index))
-             for order, index in enumerate(parked_choices)],
-            key=lambda choice: choice[:3],
-        )
         chosen = False
-        for _, _, _, source in choices:
+        for source in ordered_return_sources(board_choices, parked_choices):
             if isinstance(source, BoardSquare):
                 if try_direct_home(source.name):
                     chosen = True

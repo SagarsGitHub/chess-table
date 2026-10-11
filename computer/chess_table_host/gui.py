@@ -32,13 +32,14 @@ from .remote_contract import (
     request_identifier,
 )
 from .remote_session import RemoteSession
+from .host_config import DEFAULT_CONFIG, _load_config
+from .link_adapters import SimulatedLink
 from .planner import PlanError
 from .routing import RouteError, RouteGeometry
 from .serial_link import LinkError
 from .play import (
-    DEFAULT_CONFIG, SimulatedLink, _archive_checkpoint, _connect_physical,
-    _feasible_engine_moves, _geometry_from_file, _load_config,
-    _resolve_engine_path, _route_geometry,
+    _archive_checkpoint, _connect_physical, _feasible_engine_moves,
+    _geometry_from_file, _resolve_engine_path, _route_geometry,
 )
 from .remote_http import RemoteHTTPServer, read_remote_token
 from .session_lock import SessionLock
@@ -123,6 +124,9 @@ def _active_action(state: GameState) -> dict[str, Any] | None:
         "total_actions": len(active.actions),
         "action": value["actions"][index],
         "active_route": list(active.active_route) if active.active_route else None,
+        "castle_clearance_override": bool(
+            state.pending and state.pending.castle_clearance_override
+        ),
     }
 
 
@@ -185,9 +189,9 @@ class GameController:
         self._waiting = False
         if state.reset is not None:
             self._status = (
-                "Inspect and reconcile the saved reset transfer."
+                "Inspect and reconcile the saved reset action."
                 if state.reset.phase != "ready" else
-                "Board reset paused; continue from the saved transfer."
+                "Board reset paused; continue from the saved action."
             )
         elif state.pending is not None:
             self._status = (
@@ -626,14 +630,14 @@ class GameController:
                 self._status = self._error
 
     def reconcile(self, outcome: str, confirmed: bool) -> None:
-        """Record the inspected piece location after an uncertain transfer."""
+        """Record the inspected piece location after an uncertain action."""
         if not isinstance(outcome, str) or outcome not in {"source", "destination", "abort"}:
             raise ApiError("outcome must be source, destination, or abort", HTTPStatus.BAD_REQUEST)
         if confirmed is not True:
             raise ApiError("confirm inspection and the selected physical position first", HTTPStatus.BAD_REQUEST)
         with self._guard:
             if self._worker is not None:
-                raise ApiError("pause and wait for the current transfer before reconciling")
+                raise ApiError("pause and wait for the current action before reconciling")
             current = self._load_checkpoint()
             if current.reset is not None:
                 if outcome == "abort":
@@ -641,14 +645,14 @@ class GameController:
                 elif current.reset.phase != "ready":
                     self.runner.resolve_uncertain_reset(outcome)
                 else:
-                    raise ApiError("no uncertain reset transfer to resolve")
+                    raise ApiError("no uncertain reset action to resolve")
             elif current.pending is not None:
                 if outcome == "abort":
                     self.runner.abort_pending_after_restore()
                 elif current.pending.phase != "ready":
                     self.runner.resolve_uncertain_action(outcome)
                 else:
-                    raise ApiError("no uncertain move transfer to resolve")
+                    raise ApiError("no uncertain move action to resolve")
             else:
                 raise ApiError("there is no pending move or reset to reconcile")
             if self.simulate and self.link is not None:
@@ -663,7 +667,7 @@ class GameController:
         if state.pending is not None:
             raise ApiError("finish or reconcile the pending chess move before resetting")
         if state.reset is not None and state.reset.phase != "ready":
-            raise ApiError("inspect and reconcile the uncertain reset transfer first")
+            raise ApiError("inspect and reconcile the uncertain reset action first")
         self._start_worker(self._reset_loop)
 
     def end_game_and_reset(self) -> None:
@@ -704,7 +708,7 @@ class GameController:
             task()
             completed = True
         except MoveDeferred:
-            self._set_activity("paused", "Paused at a completed transfer boundary; checkpoint saved.")
+            self._set_activity("paused", "Paused at a completed action boundary; checkpoint saved.")
         except BaseException as exc:
             with self._guard:
                 self._error = str(exc)
@@ -759,7 +763,7 @@ class GameController:
         return not self._stop.is_set()
 
     def _motion_link(self, link):
-        """Do not send CARRY if STOP landed after route approval."""
+        """Do not send motion if STOP landed after route approval."""
         owner = self
 
         class CancellableLink:
@@ -772,6 +776,20 @@ class GameController:
                         "STOP arrived after the carry was checkpointed; inspect its source"
                     )
                 return link.carry(source_id, destination_id, point_chars)
+
+            def carry_offset(self, source_id, corner, destination_id, point_chars):
+                if owner._stop.is_set():
+                    raise ReconciliationRequired(
+                        "STOP arrived after the offset carry was checkpointed; inspect the rook"
+                    )
+                return link.carry_offset(source_id, corner, destination_id, point_chars)
+
+            def offset(self, square_id, corner, direction):
+                if owner._stop.is_set():
+                    raise ReconciliationRequired(
+                        "STOP arrived after the piece nudge was checkpointed; inspect its square"
+                    )
+                return link.offset(square_id, corner, direction)
 
         return CancellableLink()
 
@@ -874,7 +892,11 @@ class GameController:
                 uci = self._next_move(engine, geometry)
                 if uci is None or self._stop.is_set():
                     break
-                self._set_activity("moving", f"Moving {uci}; waiting for controller completion...")
+                pending = self.runner.state.pending
+                status = f"Moving {uci}; waiting for controller completion..."
+                if pending is not None and pending.castle_clearance_override:
+                    status = f"Moving {uci} via last-resort castling route; watch nearby pieces."
+                self._set_activity("moving", status)
                 self.runner.execute_pending(
                     self._motion_link(link), geometry, self._confirm_action, self._approve_route,
                     confirmation_source="simulation" if self.simulate else "controller_done",

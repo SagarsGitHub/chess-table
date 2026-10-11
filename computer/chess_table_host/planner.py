@@ -26,7 +26,7 @@ class IllegalMoveError(PlanError):
 
 
 class NoEmptyParkingSlotError(PlanError):
-    """A captured or displaced pawn has no free physical parking slot."""
+    """A piece has no available physical parking slot."""
 
 
 class PromotionPieceUnavailableError(PlanError):
@@ -72,14 +72,76 @@ class Transfer:
     Standalone plans use the legal board symbol, which can differ from the
     physical pawn standing in for a promoted piece. The game runner resolves
     that difference before routing or committing a transfer.
-    ``reason`` is one of move, capture, castle_king, castle_rook,
-    promotion_stand_in, promotion_pawn, or promotion_piece.
+    ``reason`` records a chess transfer, a temporary knight/castling clearance
+    stage or restoration, or a promotion transfer. Temporary actions change
+    only the physical inventory until the complete legal move is committed.
     """
 
     piece: str
     source: Location
     destination: Location
     reason: str
+
+
+@dataclass(frozen=True)
+class RookOffset:
+    """Carry a castling rook between its square center and an in-square corner.
+
+    The square remains occupied in the host and controller maps. ``OUT`` moves
+    from center to corner; ``IN`` restores the center in legacy saved plans.
+    """
+
+    piece: str
+    square: BoardSquare
+    corner: str
+    direction: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        corners = {
+            "a1": {"NW", "SW"}, "h1": {"NE", "SE"},
+            "a8": {"NW", "SW"}, "h8": {"NE", "SE"},
+        }
+        if self.piece not in {"R", "r"} or not isinstance(self.square, BoardSquare):
+            raise ValueError("rook offset requires a rook on a board square")
+        if self.square.name not in corners or self.corner not in corners[self.square.name]:
+            raise ValueError("rook offset must use an outward home-square corner")
+        if self.piece != ("R" if self.square.name[1] == "1" else "r"):
+            raise ValueError("rook offset piece color must match its home rank")
+        if (self.direction, self.reason) not in {
+            ("OUT", "castle_rook_out"), ("IN", "castle_rook_in"),
+        }:
+            raise ValueError("rook offset direction and reason must match")
+
+
+@dataclass(frozen=True)
+class PieceOffset:
+    """Nudge any occupied board piece within its square for a clear carry.
+
+    The piece remains assigned to ``square`` in the board and controller maps.
+    A matching ``IN`` action must restore it after the intervening carry.
+    """
+
+    piece: str
+    square: BoardSquare
+    corner: str
+    direction: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        try:
+            chess.Piece.from_symbol(self.piece)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("piece offset requires a chess piece symbol") from exc
+        if not isinstance(self.square, BoardSquare):
+            raise ValueError("piece offset requires a board square")
+        if self.corner not in {"NW", "NE", "SW", "SE"}:
+            raise ValueError("piece offset requires a square corner")
+        if (self.direction, self.reason) not in {
+            ("OUT", "clearance_offset_out"),
+            ("IN", "clearance_offset_in"),
+        }:
+            raise ValueError("piece offset direction and reason must match")
 
 
 @dataclass(frozen=True)
@@ -91,7 +153,7 @@ class ManualReplacement:
     replacement: str
 
 
-Action: TypeAlias = Transfer | ManualReplacement
+Action: TypeAlias = Transfer | RookOffset | PieceOffset | ManualReplacement
 SlotSelector: TypeAlias = Callable[[BoardSquare, str, tuple[str | None, ...]], ParkingSlot]
 
 
@@ -130,6 +192,7 @@ class MovePlan:
     parking_before: ParkingInventory
     parking_after: ParkingInventory
     actions: tuple[Action, ...]
+    castle_clearance_override: bool = False
 
     @property
     def requires_manual_confirmation(self) -> bool:
@@ -175,15 +238,17 @@ def plan_move(
 
     Captured pieces are transferred to the lowest numbered empty slot before
     the attacking piece moves. En passant removes the pawn from its actual
-    square. Castling emits separate king and rook transfers. By default, a
-    promoted pawn remains the same physical pawn while chess rules use the
-    selected promoted type. Explicit legacy policies can request a manual
-    replacement or a matching parked piece. ``slot_selector`` may choose a physically
-    reachable empty slot based on its own occupancy and geometry model; it is
-    called with source, legal-board piece symbol, and the current immutable
-    slot snapshot. After a promotion, standalone transfer symbols and parking
-    inventory are logical drafts; GameRunner resolves the actual pawn token
-    before physical routing. No motor route or acknowledgement is implied.
+    square. Castling emits a king and rook transfer; the game runner adds a
+    temporary corner offset for the rook when planning physical motion. By
+    default, a promoted pawn remains the same physical pawn while
+    chess rules use the selected promoted type. Explicit legacy policies can
+    request a manual replacement or a matching parked piece. ``slot_selector``
+    may choose a physically reachable empty slot based on its own occupancy and
+    geometry model. It is called with source, legal-board piece symbol, and the
+    current immutable slot snapshot. After a promotion, standalone transfer
+    symbols and parking inventory are logical drafts; GameRunner resolves the
+    actual pawn token before physical routing. No motor route or
+    acknowledgement is implied.
     """
 
     if board.chess960:
@@ -225,10 +290,11 @@ def plan_move(
         kingside = board.is_kingside_castling(move)
         rook_from = chess.square(7 if kingside else 0, rank)
         rook_to = chess.square(5 if kingside else 3, rank)
+        rook = chess.Piece(chess.ROOK, board.turn).symbol()
         actions.extend(
             (
                 Transfer(mover.symbol(), _board_square(move.from_square), _board_square(move.to_square), "castle_king"),
-                Transfer(chess.Piece(chess.ROOK, board.turn).symbol(), _board_square(rook_from), _board_square(rook_to), "castle_rook"),
+                Transfer(rook, _board_square(rook_from), _board_square(rook_to), "castle_rook"),
             )
         )
     elif move.promotion:

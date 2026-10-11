@@ -311,10 +311,17 @@ function renderTransfer() {
   els["transfer-status"].hidden = !operation;
   if (!operation) return;
   const current = Number.isInteger(operation.next_action) ? operation.next_action + 1 : operation.action_number || "?";
-  els["transfer-progress"].textContent = `${ui.state.reset ? "Reset" : "Move"} · ${current} / ${operation.total_actions || "?"}`;
+  const clearanceNote = operation.castle_clearance_override ? " · relaxed clearance" : "";
+  els["transfer-progress"].textContent = `${ui.state.reset ? "Reset" : "Move"} · ${current} / ${operation.total_actions || "?"}${clearanceNote}`;
   const action = operation.action;
   if (action?.type === "transfer") {
-    els["transfer-action"].textContent = `${pieceDescription(action.piece)} · ${locationLabel(action.source)} → ${locationLabel(action.destination)}`;
+    const source = action.reason === "castle_rook_from_offset"
+      ? `${locationLabel(action.source)} ${operation.active_route?.[1] || "offset"} corner`
+      : locationLabel(action.source);
+    els["transfer-action"].textContent = `${pieceDescription(action.piece)} · ${source} → ${locationLabel(action.destination)}`;
+  } else if (action?.type === "rook_offset" || action?.type === "piece_offset") {
+    const motion = action.direction === "OUT" ? "nudge toward" : "recenter from";
+    els["transfer-action"].textContent = `${pieceDescription(action.piece)} · ${motion} ${action.corner} corner within ${action.square}`;
   } else if (action?.type === "manual_replacement") {
     els["transfer-action"].textContent = `Promotion at ${action.square}`;
   } else {
@@ -322,7 +329,9 @@ function renderTransfer() {
   }
   const route = Array.isArray(operation.active_route) ? operation.active_route : [];
   els["transfer-route"].hidden = route.length === 0;
-  els["transfer-route"].textContent = route.length ? `CARRY route: ${route.join(" ")}` : "";
+  const command = action?.type === "rook_offset" || action?.type === "piece_offset" ? "OFFSET"
+    : action?.reason === "castle_rook_from_offset" ? "CARRY_OFFSET" : "CARRY";
+  els["transfer-route"].textContent = route.length ? `${command} arguments: ${route.join(" ")}` : "";
 }
 
 function renderSetup() {
@@ -461,7 +470,7 @@ function locationLabel(location) {
   return "unknown location";
 }
 
-// Inspection is required only when the worker ended with an uncertain transfer.
+// Inspection is required when the worker ended with an uncertain physical action.
 function renderRecovery() {
   const needed = needsReconciliation();
   els["recovery-panel"].hidden = !needed;
@@ -477,14 +486,34 @@ function renderRecovery() {
   const index = Number.isInteger(operation?.next_action) ? operation.next_action + 1 : "?";
   const total = operation?.total_actions || "?";
   const target = isReset ? "board reset" : operation?.uci ? `move ${operation.uci}` : "physical move";
-  els["recovery-detail"].textContent = `The ${target} stopped during transfer ${index} of ${total}. The saved position cannot establish where the piece ended up.`;
+  els["recovery-detail"].textContent = `The ${target} stopped during action ${index} of ${total}. The saved position cannot establish where the piece ended up.`;
   if (action?.type === "transfer") {
-    els["recovery-action"].textContent = `${pieceDescription(action.piece)}: ${locationLabel(action.source)} → ${locationLabel(action.destination)}`;
+    const source = action.reason === "castle_rook_from_offset"
+      ? `${locationLabel(action.source)} ${operation.active_route?.[1] || "offset"} corner`
+      : locationLabel(action.source);
+    els["recovery-action"].textContent = `${pieceDescription(action.piece)}: ${source} → ${locationLabel(action.destination)}`;
+  } else if (action?.type === "rook_offset" || action?.type === "piece_offset") {
+    const source = action.direction === "OUT" ? "center" : `${action.corner} corner`;
+    const destination = action.direction === "OUT" ? `${action.corner} corner` : "center";
+    els["recovery-action"].textContent = `${pieceDescription(action.piece)} in ${action.square}: ${source} → ${destination}`;
   } else if (action?.type === "manual_replacement") {
     els["recovery-action"].textContent = `Inspect promotion at ${action.square}`;
   } else {
     els["recovery-action"].textContent = "Inspect the last transfer and its parking slots.";
   }
+  const isOffset = action?.type === "rook_offset" || action?.type === "piece_offset";
+  const isOffsetCarry = action?.reason === "castle_rook_from_offset";
+  const instruction = els["recovery-panel"].querySelector(".recovery-instruction");
+  instruction.textContent = isOffset
+    ? "Inspect the named piece within its square and check nearby pieces. Confirm whether it is centered or at the named corner before choosing the outcome."
+    : isOffsetCarry
+    ? "Inspect the rook at its offset corner, its destination, and the king's square before choosing the outcome."
+    : "Check the piece, its source and destination, and all affected parking slots against the physical board before choosing the outcome.";
+  const sourceButton = els["recovery-panel"].querySelector('[data-outcome="source"]');
+  const destinationButton = els["recovery-panel"].querySelector('[data-outcome="destination"]');
+  sourceButton.textContent = isOffset ? (action.direction === "OUT" ? "Piece at center" : "Piece at corner")
+    : isOffsetCarry ? "Rook at corner" : "Piece at source";
+  destinationButton.textContent = isOffset ? (action.direction === "OUT" ? "Piece at corner" : "Piece at center") : "Piece at destination";
   const disabled = !els.inspected.checked || ui.commandInFlight || !ui.online || ui.state.busy;
   for (const button of els["recovery-panel"].querySelectorAll("[data-outcome]")) button.disabled = disabled;
 }

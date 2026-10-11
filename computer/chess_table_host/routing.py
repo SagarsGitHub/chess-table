@@ -10,10 +10,11 @@ slots lie on the even-coordinate perimeter.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import KW_ONLY, dataclass
 from functools import lru_cache
 from heapq import heappop, heappush
-from math import ceil, floor, hypot, isfinite
+from math import ceil, floor, hypot, isfinite, sqrt
 from struct import pack, unpack
 from typing import Iterable
 
@@ -30,6 +31,10 @@ from .planner import (
 # edge squares adjacent to the one parking endpoint. A simple path cannot
 # visit one twice. Square-to-square routes have the smaller bound of 83.
 MAX_ROUTE_POINTS = 84
+DELIVERY_OVERSHOOT_FRACTION = 0.20
+_RELEASE_BOUND_RETRY_FRACTION = 0.90
+_RELEASE_ROUNDING_GUARD_MM = 0.05
+_FIRMWARE_PIECE_CLEARANCE_MM = 18.0
 
 
 class RouteError(ValueError):
@@ -144,10 +149,100 @@ class RouteGeometry:
         return pulses / ppm
 
 
+def required_offset_clearance_mm(geometry: RouteGeometry) -> float:
+    """Host guard around displaced pieces and firmware's 18 mm minimum."""
+    return max(geometry.required_center_distance_mm,
+               _FIRMWARE_PIECE_CLEARANCE_MM) + _RELEASE_ROUNDING_GUARD_MM
+
+
 def _f32(value: float) -> float:
     """Round a host intermediate to the AVR firmware's 32-bit float."""
 
     return unpack("<f", pack("<f", value))[0]
+
+
+def compensated_release_target_mm(
+    start_mm: tuple[float, float], end_mm: tuple[float, float],
+    geometry: RouteGeometry,
+) -> tuple[float, float]:
+    """Pulse-rounded magnet release beyond an intended carried-piece endpoint.
+
+    Match the Uno's float32 normalized final travel vector and configured
+    square-pitch extension. A small guard covers GEOM and host rounding.
+    The piece's *intended* resting point remains ``end_mm``.
+    """
+    if not isinstance(geometry, RouteGeometry):
+        raise TypeError("geometry must be a RouteGeometry")
+    if any(not isinstance(point, tuple) or len(point) != 2 or
+           any(not isinstance(value, (int, float)) or isinstance(value, bool) or
+               not isfinite(value) for value in point)
+           for point in (start_mm, end_mm)):
+        raise ValueError("release endpoints must be finite millimeter pairs")
+    dx = _f32(_f32(end_mm[0]) - _f32(start_mm[0]))
+    dy = _f32(_f32(end_mm[1]) - _f32(start_mm[1]))
+    length = _f32(sqrt(_f32(_f32(dx * dx) + _f32(dy * dy))))
+    if length <= 0:
+        raise NoRouteError("loaded final segment has no travel direction")
+    ppm = _f32(geometry.pulses_per_mm)
+    distance = _f32(_f32(DELIVERY_OVERSHOOT_FRACTION) *
+                    _f32(geometry.square_pitch_mm))
+    bounds = tuple(
+        (
+            ceil(_f32(_f32(geometry.end_inset_mm) * ppm)),
+            floor(_f32(_f32(span - geometry.end_inset_mm) * ppm)),
+        )
+        for span in (geometry.x_travel_mm, geometry.y_travel_mm)
+    )
+    # Firmware makes only one shorter attempt when the full extension exceeds
+    # a measured limit; it does not continuously shrink the stroke.
+    for fraction in (1.0, _RELEASE_BOUND_RETRY_FRACTION):
+        scale = _f32(_f32(distance / length) * _f32(fraction))
+        target = (
+            _f32(_f32(end_mm[0]) + _f32(dx * scale)),
+            _f32(_f32(end_mm[1]) + _f32(dy * scale)),
+        )
+        pulses = tuple(floor(_f32(value * ppm) + 0.5) for value in target)
+        if all(low <= pulse <= high for pulse, (low, high) in zip(pulses, bounds)):
+            # This is the attempt the firmware will use. If it is too near a
+            # limit for GEOM text precision, reject instead of pretending the
+            # firmware will take the shorter second attempt.
+            if any(
+                pulse < ceil(_f32(_f32(geometry.end_inset_mm + _RELEASE_ROUNDING_GUARD_MM) * ppm))
+                or pulse > floor(_f32(_f32(span - geometry.end_inset_mm - _RELEASE_ROUNDING_GUARD_MM) * ppm))
+                for pulse, span in zip(pulses, (geometry.x_travel_mm, geometry.y_travel_mm))
+            ):
+                raise NoRouteError("compensated release is too close to measured travel bounds")
+            return pulses[0] / ppm, pulses[1] / ppm
+        if any(
+            (pulse < low and low / ppm - value < _RELEASE_ROUNDING_GUARD_MM) or
+            (pulse > high and value - high / ppm < _RELEASE_ROUNDING_GUARD_MM)
+            for value, pulse, (low, high) in zip(target, pulses, bounds)
+        ):
+            # GEOM decimal rounding or a sub-pulse difference between the
+            # host's measured point and firmware's routePoint could change
+            # whether the firmware uses this attempt. Do not assume a shorter
+            # release in that narrow zone.
+            raise NoRouteError("compensated release retry is uncertain at measured bounds")
+    raise NoRouteError("compensated release is outside measured travel bounds")
+
+
+def carry_release_target_mm(
+    route: CarryRoute, geometry: RouteGeometry,
+) -> tuple[float, float] | None:
+    """Magnet release point for a board delivery; parking uses nominal arrival."""
+    if not isinstance(route, CarryRoute):
+        raise TypeError("route must be a CarryRoute")
+    if not isinstance(route.transfer.destination, BoardSquare):
+        return None
+    prior = (
+        route.source_offset_mm
+        if len(route.points) == 2 and route.source_offset_mm is not None
+        else geometry.physical_point_mm(route.points[-2])
+    )
+    assert prior is not None
+    return compensated_release_target_mm(
+        prior, geometry.physical_point_mm(route.points[-1]), geometry,
+    )
 
 
 @dataclass(frozen=True)
@@ -158,6 +253,7 @@ class CarryRoute:
     points: tuple[HalfSquarePoint, ...]
     geometry_applied: bool = False
     clearance_ignored: bool = False
+    source_offset_mm: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if not 2 <= len(self.points) <= MAX_ROUTE_POINTS:
@@ -168,6 +264,23 @@ class CarryRoute:
         """Coordinate pairs suitable for serialization as two bytes each."""
 
         return tuple((point.x, point.y) for point in self.points)
+
+
+def loaded_route_segments_mm(
+    route: CarryRoute, geometry: RouteGeometry,
+) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+    """Physical loaded path, including a displaced pickup and board release.
+
+    The wire route still ends at the nominal delivery center. Clearance and
+    blocker ranking must also see the magnet's final release extension.
+    """
+    positions = [geometry.physical_point_mm(point) for point in route.points]
+    if route.source_offset_mm is not None:
+        positions[0] = route.source_offset_mm
+    release = carry_release_target_mm(route, geometry)
+    if release is not None:
+        positions.append(release)
+    return tuple(zip(positions, positions[1:]))
 
 
 def parking_point(slot: ParkingSlot) -> HalfSquarePoint:
@@ -258,6 +371,8 @@ def plan_transfer_route(
     geometry: RouteGeometry | None = None,
     max_waypoints: int | None = None,
     ignore_piece_clearance: bool = False,
+    source_offset_mm: tuple[float, float] | None = None,
+    offset_positions_mm: Mapping[BoardSquare, tuple[float, float]] | None = None,
 ) -> CarryRoute:
     """Route a single transfer against the occupancy *before* that transfer.
 
@@ -273,6 +388,11 @@ def plan_transfer_route(
     route is a nominal path and has no piece-clearance check.
     ``ignore_piece_clearance`` skips only the circular diameter/margin test.
     Measured pulse bounds, occupied centers, and waypoint capacity still apply.
+    ``source_offset_mm`` keeps the encoded first point at its square center but
+    checks and costs the first loaded segment from a known within-square source.
+    ``offset_positions_mm`` locates occupied pieces that have been nudged within
+    their squares. Their actual positions govern circular clearance while their
+    nominal occupied centers remain blocked in the firmware-compatible graph.
     """
 
     if not isinstance(transfer, Transfer):
@@ -281,6 +401,14 @@ def plan_transfer_route(
         raise TypeError("geometry must be a RouteGeometry or None")
     if type(ignore_piece_clearance) is not bool:
         raise TypeError("ignore_piece_clearance must be a bool")
+    if offset_positions_mm is not None and (geometry is None or not isinstance(offset_positions_mm, Mapping)):
+        raise ValueError("offset_positions_mm requires measured geometry and a mapping")
+    if source_offset_mm is not None:
+        if (geometry is None or not isinstance(transfer.source, BoardSquare) or
+                not isinstance(source_offset_mm, tuple) or len(source_offset_mm) != 2 or
+                any(not isinstance(value, (int, float)) or isinstance(value, bool) or
+                    not isfinite(value) for value in source_offset_mm)):
+            raise ValueError("source_offset_mm requires measured board-square coordinates")
     if max_waypoints is not None and (type(max_waypoints) is not int or not 2 <= max_waypoints <= MAX_ROUTE_POINTS):
         raise ValueError(f"max_waypoints must be 2..{MAX_ROUTE_POINTS}")
     source, destination = transfer.source, transfer.destination
@@ -304,8 +432,37 @@ def plan_transfer_route(
     if destination in occupied:
         raise RouteError("Transfer destination must be vacant in the supplied snapshot")
 
+    offsets: dict[BoardSquare, tuple[float, float]] = {}
+    for square, position in (offset_positions_mm or {}).items():
+        if not isinstance(square, BoardSquare) or square not in squares:
+            raise RouteError("every offset position must belong to an occupied board square")
+        if (not isinstance(position, tuple) or len(position) != 2 or
+                any(not isinstance(value, (int, float)) or isinstance(value, bool) or
+                    not isfinite(value) for value in position)):
+            raise ValueError("offset positions must be finite millimeter coordinate pairs")
+        center = geometry.physical_point_mm(location_point(square))
+        if any(abs(value - nominal) > geometry.square_pitch_mm / 2 or
+               not geometry.end_inset_mm <= value <= span - geometry.end_inset_mm
+               for value, nominal, span in zip(position, center,
+                    (geometry.x_travel_mm, geometry.y_travel_mm))):
+            raise NoRouteError("offset piece lies outside its square or measured travel")
+        offsets[square] = position
+    if isinstance(source, BoardSquare) and source in offsets:
+        if source_offset_mm is None or any(
+            abs(a - b) > 1e-6 for a, b in zip(source_offset_mm, offsets[source])
+        ):
+            raise RouteError("a displaced source requires matching source_offset_mm")
+
     source_point = location_point(source)
     destination_point = location_point(destination)
+    if source_offset_mm is not None:
+        center_mm = geometry.physical_point_mm(source_point)
+        for coordinate, center, span in zip(
+            source_offset_mm, center_mm, (geometry.x_travel_mm, geometry.y_travel_mm)
+        ):
+            if (abs(coordinate - center) > geometry.square_pitch_mm / 2 or
+                    not geometry.end_inset_mm <= coordinate <= span - geometry.end_inset_mm):
+                raise NoRouteError("offset source lies outside its square or measured travel")
     park_point = source_point if isinstance(source, ParkingSlot) else (
         destination_point if isinstance(destination, ParkingSlot) else None
     )
@@ -317,21 +474,39 @@ def plan_transfer_route(
         point for point in _adjacent_edge_centers(park_point)
         if point not in occupied_square_points
     ) if park_point is not None else frozenset()
-    obstacles = tuple(location_point(location) for location in ((*squares, *slots)) if location != source)
+    obstacle_locations = tuple(location for location in ((*squares, *slots)) if location != source)
+    obstacles = tuple(location_point(location) for location in obstacle_locations)
 
     @lru_cache(maxsize=None)
     def metric(point: HalfSquarePoint) -> tuple[float, float]:
+        if point == source_point and source_offset_mm is not None:
+            return source_offset_mm
         return geometry.physical_point_mm(point) if geometry else (float(point.x), float(point.y))
 
     try:
         metric(source_point)
         metric(destination_point)
-        obstacle_positions = tuple(metric(point) for point in obstacles)
+        nominal_obstacle_positions = tuple(metric(point) for point in obstacles)
+        obstacle_positions = tuple(
+            offsets.get(location, nominal) if isinstance(location, BoardSquare)
+            else nominal
+            for location, nominal in zip(obstacle_locations, nominal_obstacle_positions)
+        )
     except RouteError as exc:
         raise NoRouteError("Source, destination or occupied piece lies outside measured bounds") from exc
     required_squared = (
         geometry.required_center_distance_mm ** 2
         if geometry is not None and not ignore_piece_clearance else None
+    )
+    # OFFSET motion is checked by firmware at an 18 mm minimum. Retain that
+    # bound (plus pulse-rounding guard) for a carried piece near a displaced one.
+    displaced_required_squared = (
+        required_offset_clearance_mm(geometry) ** 2
+        if geometry is not None and not ignore_piece_clearance else None
+    )
+    obstacle_required_squared = tuple(
+        displaced_required_squared if location in offsets else required_squared
+        for location in obstacle_locations
     )
     no_route_message = (
         f"No route from {source!r} to {destination!r} "
@@ -347,14 +522,40 @@ def plan_transfer_route(
             return False
         if any(_point_on_segment(obstacle, a, b) for obstacle in obstacles):
             return False
+        if source_offset_mm is not None and a == source_point:
+            # CARRY_OFFSET firmware checks its first loaded leg against every
+            # *nominal* MAP center at an 18 mm minimum. The host also checks
+            # the actual displaced centers below.
+            first_required = required_offset_clearance_mm(geometry) ** 2
+            if any(_distance_squared_to_segment(center, start, end) < first_required
+                   for center in nominal_obstacle_positions):
+                return False
+        if b == destination_point and isinstance(destination, BoardSquare) and geometry is not None:
+            # The Uno keeps the magnet on for a short, calibrated extension
+            # beyond the encoded destination center. The extension itself must
+            # fit measured travel and clear both the firmware's nominal MAP
+            # centers and the host's known displaced-piece centers. Keep this
+            # check on the final search edge so another approach can be tried.
+            try:
+                release = compensated_release_target_mm(start, end, geometry)
+            except NoRouteError:
+                return False
+            nominal_min = required_offset_clearance_mm(geometry) ** 2
+            if any(_distance_squared_to_segment(center, end, release) < nominal_min
+                   for center in nominal_obstacle_positions):
+                return False
+            if any(_distance_squared_to_segment(center, end, release) <
+                   max(threshold or 0.0, nominal_min) - 1e-9
+                   for center, threshold in zip(obstacle_positions, obstacle_required_squared)):
+                return False
         if required_squared is None:
             return all(
                 _distance_squared_to_segment(center, start, end) > 1e-12
                 for center in obstacle_positions
             )
         return all(
-            _distance_squared_to_segment(center, start, end) >= required_squared - 1e-9
-            for center in obstacle_positions
+            _distance_squared_to_segment(center, start, end) >= threshold - 1e-9
+            for center, threshold in zip(obstacle_positions, obstacle_required_squared)
         )
 
     # Board centers attach to four diagonal grid points; parking is itself a
@@ -531,6 +732,7 @@ def plan_transfer_route(
         transfer, compressed,
         geometry_applied=geometry is not None,
         clearance_ignored=geometry is not None and ignore_piece_clearance,
+        source_offset_mm=source_offset_mm,
     )
 
 

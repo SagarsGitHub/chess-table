@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import chess
+
 from chess_table_host.game import (
     GameRunner,
     GameState,
     JsonGameStore,
+    MoveDeferred,
     ReconciliationRequired,
 )
-from chess_table_host.planner import BoardSquare, ParkingSlot, Transfer
+from chess_table_host.planner import BoardSquare, ParkingInventory, ParkingSlot, Transfer
 from chess_table_host.routing import NoRouteError, RouteGeometry
 
 
@@ -65,6 +69,55 @@ class GameRunnerTests(unittest.TestCase):
         self.runner.prepare_move(uci, GEOMETRY)
         self.runner.execute_pending(FakeLink(), GEOMETRY, lambda _action: True)
 
+    def runner_at(self, fen: str) -> GameRunner:
+        board = chess.Board(fen)
+        self.assertTrue(board.is_valid())
+        squares = {
+            chess.square_name(square): piece.symbol()
+            for square, piece in board.piece_map().items()
+        }
+        runner = GameRunner(
+            GameState(board.fen(), ParkingInventory.empty(), squares, [None] * 32),
+            self.store,
+        )
+        self.store.save(runner.state)
+        return runner
+
+    def test_midgame_knight_stages_black_blocker_with_strict_routes(self) -> None:
+        runner = self.runner_at(
+            "k7/8/6pp/3pppp1/3PN3/3B4/3PP3/4K3 w - - 0 1"
+        )
+        plan = runner.prepare_move("e4f6", GEOMETRY)
+        self.assertEqual(plan.actions, (
+            Transfer("p", BoardSquare("e5"), BoardSquare("e6"), "knight_stage"),
+            Transfer("N", BoardSquare("e4"), BoardSquare("f6"), "knight_clearance_move"),
+            Transfer("p", BoardSquare("e6"), BoardSquare("e5"), "knight_restore"),
+        ))
+        routes = []
+        runner.execute_pending(
+            FakeLink(), GEOMETRY, lambda _action: True,
+            lambda _action, route, _wire: routes.append(route) or True,
+        )
+        self.assertEqual(len(routes), 3)
+        self.assertTrue(all(not route.clearance_ignored for route in routes))
+        self.assertEqual(runner.state.physical_squares["f6"], "N")
+        self.assertEqual(runner.state.physical_squares["e5"], "p")
+        self.assertEqual(runner.state.moves, ["e4f6"])
+
+    def test_midboard_rook_move_stages_pawn_when_clearance_is_tighter(self) -> None:
+        geometry = replace(GEOMETRY, moving_diameter_mm=23, occupied_diameter_mm=23)
+        runner = self.runner_at("k7/8/8/8/3PRP2/8/8/4K3 w - - 0 1")
+        plan = runner.prepare_move("e4e6", geometry)
+        self.assertEqual(plan.actions, (
+            Transfer("P", BoardSquare("d4"), BoardSquare("c4"), "clearance_stage"),
+            Transfer("R", BoardSquare("e4"), BoardSquare("e6"), "clearance_move"),
+            Transfer("P", BoardSquare("c4"), BoardSquare("d4"), "clearance_restore"),
+        ))
+        runner.execute_pending(FakeLink(), geometry, lambda _action: True)
+        self.assertEqual(runner.state.physical_squares["e6"], "R")
+        self.assertEqual(runner.state.physical_squares["d4"], "P")
+        self.assertEqual(runner.state.moves, ["e4e6"])
+
     def prepare_capture(self) -> tuple[str, ParkingSlot]:
         self.play("e2e4")
         self.play("d7d5")
@@ -112,6 +165,42 @@ class GameRunnerTests(unittest.TestCase):
         self.assertEqual(self.runner.state.moves, ["e2e4", "d7d5", "e4d5"])
         self.assertEqual(self.store.load().to_json(), self.runner.state.to_json())
 
+    def test_capture_checks_other_parking_slots_after_first_route_fails(self) -> None:
+        self.play("e2e4")
+        self.play("d7d5")
+        from chess_table_host import game
+
+        original_stage = game.plan_cleared_transfer
+        original_offset = game.plan_offset_cleared_transfer
+
+        def block_first_slot_stage(squares, slots, transfer, geometry):
+            if (transfer.reason == "capture" and
+                    transfer.destination == ParkingSlot(0)):
+                return None
+            return original_stage(squares, slots, transfer, geometry)
+
+        def block_first_slot_offset(transfer, squares, slots, geometry):
+            if (transfer.reason == "capture" and
+                    transfer.destination == ParkingSlot(0)):
+                return None
+            return original_offset(transfer, squares, slots, geometry)
+
+        # Force an initially chosen slot that has no strict direct or staged
+        # route. Preflight must try another vacancy for the complete capture.
+        with (
+            patch.object(game.ReachableParkingSlotSelector, "__call__",
+                         return_value=ParkingSlot(0)),
+            patch.object(game, "plan_cleared_transfer",
+                         side_effect=block_first_slot_stage),
+            patch.object(game, "plan_offset_cleared_transfer",
+                         side_effect=block_first_slot_offset),
+        ):
+            plan = self.runner.prepare_move("e4d5", GEOMETRY)
+        transfers = [action for action in plan.actions if isinstance(action, Transfer)]
+        self.assertNotEqual(transfers[0].destination, ParkingSlot(0))
+        self.assertEqual(transfers[-1].destination, BoardSquare("d5"))
+        self.assertIsNotNone(self.runner.state.pending)
+
     def _fault_on_capture_victim(self) -> tuple[str, ParkingSlot]:
         before, slot = self.prepare_capture()
         with self.assertRaises(OSError):
@@ -132,6 +221,8 @@ class GameRunnerTests(unittest.TestCase):
         self.assertEqual(saved.pending.next_action, 0)
         self.assertEqual(saved.board_fen, before)
         self.assertEqual(saved.physical_squares["d5"], "p")
+        self.assertEqual(saved.events[-1]["action"], 0)
+        self.assertEqual(saved.events[-1]["outcome"], "source")
         self.runner.execute_pending(FakeLink(), GEOMETRY, lambda _action: True)
         self.assertIsNone(self.runner.state.pending)
         self.assertEqual(self.runner.state.physical_parking[slot.slot_id], "p")
@@ -146,6 +237,8 @@ class GameRunnerTests(unittest.TestCase):
         self.assertEqual(saved.board_fen, before)
         self.assertNotIn("d5", saved.physical_squares)
         self.assertEqual(saved.physical_parking[slot.slot_id], "p")
+        self.assertEqual(saved.events[-1]["action"], 0)
+        self.assertEqual(saved.events[-1]["outcome"], "destination")
         link = FakeLink()
         self.runner.execute_pending(link, GEOMETRY, lambda _action: True)
         self.assertEqual(len(link.carries), 1)
@@ -160,19 +253,19 @@ class GameRunnerTests(unittest.TestCase):
         from chess_table_host import game
 
         actual_route = game.plan_transfer_route
-        calls = 0
+        failed_attacker_legs = 0
 
-        def fail_second_leg(*args, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
+        def fail_second_leg(action, **kwargs):
+            nonlocal failed_attacker_legs
+            if action.reason in {"move", "clearance_move"}:
+                failed_attacker_legs += 1
                 raise NoRouteError("second leg blocked")
-            return actual_route(*args, **kwargs)
+            return actual_route(action, **kwargs)
 
         with patch.object(game, "plan_transfer_route", side_effect=fail_second_leg):
             with self.assertRaises(NoRouteError):
                 self.runner.prepare_move("e4d5", GEOMETRY)
-        self.assertEqual(calls, 2)
+        self.assertGreater(failed_attacker_legs, 1)
         self.assertIsNone(self.runner.state.pending)
         self.assertEqual(self.runner.state.to_json(), before_state)
         self.assertEqual(self.store.path.read_bytes(), before_file)
@@ -193,21 +286,25 @@ class GameRunnerTests(unittest.TestCase):
         self.assertEqual(self.runner.state.moves, ["e2e4"])
         self.assertEqual(self.runner.state.physical_squares["e4"], "P")
 
-    def test_crowded_knight_fallback_executes_with_bounded_route_and_records_override(self) -> None:
+    def test_crowded_knight_stages_pawn_with_strict_routes_and_restores_it(self) -> None:
         before = self.runner.state.to_json()
-        with self.assertRaises(NoRouteError):
-            self.runner.preflight_move("g1f3", GEOMETRY)
+        preview = self.runner.preflight_move("g1f3", GEOMETRY)
         self.assertEqual(self.runner.state.to_json(), before)
 
         runner = GameRunner(self.runner.state, self.store, allow_tight_routes=True)
         plan = runner.prepare_move("g1f3", GEOMETRY)
-        self.assertEqual(plan.actions, (Transfer("N", BoardSquare("g1"), BoardSquare("f3"), "move"),))
+        self.assertEqual(plan.actions, preview.actions)
+        self.assertEqual(plan.actions, (
+            Transfer("P", BoardSquare("g2"), BoardSquare("g3"), "knight_stage"),
+            Transfer("N", BoardSquare("g1"), BoardSquare("f3"), "knight_clearance_move"),
+            Transfer("P", BoardSquare("g3"), BoardSquare("g2"), "knight_restore"),
+        ))
         routed = []
 
         def approve(_action, route, wire) -> bool:
             routed.append(route)
             self.assertTrue(route.geometry_applied)
-            self.assertTrue(route.clearance_ignored)
+            self.assertFalse(route.clearance_ignored)
             self.assertLessEqual(len(route.points), 12)
             self.assertLessEqual(len(wire[2]), 24)
             return True
@@ -217,17 +314,55 @@ class GameRunnerTests(unittest.TestCase):
             link, GEOMETRY, lambda _action: True, approve,
             confirmation_source="controller_done",
         )
-        self.assertEqual(len(routed), 1)
-        self.assertEqual(len(link.carries), 1)
+        self.assertEqual(len(routed), 3)
+        self.assertEqual(len(link.carries), 3)
         self.assertEqual(runner.state.moves, ["g1f3"])
         self.assertEqual(runner.state.physical_squares["f3"], "N")
+        self.assertEqual(runner.state.physical_squares["g2"], "P")
+        self.assertNotIn("g3", runner.state.physical_squares)
         self.assertNotIn("g1", runner.state.physical_squares)
         self.assertIsNone(runner.state.pending)
         started = [event for event in runner.state.events if event["event"] == "carry_started"]
         confirmed = [event for event in runner.state.events if event["event"] == "action_confirmed"]
-        self.assertEqual([event["clearance_override"] for event in started], [True])
-        self.assertEqual([event["confirmation_source"] for event in confirmed], ["controller_done"])
+        self.assertEqual([event["clearance_override"] for event in started], [False] * 3)
+        self.assertEqual([event["confirmation_source"] for event in confirmed], ["controller_done"] * 3)
         self.assertEqual(self.store.load().to_json(), runner.state.to_json())
+
+    def test_crowded_knight_resumes_after_staging_pawn(self) -> None:
+        self.runner.prepare_move("b1c3", GEOMETRY)
+        with self.assertRaises(MoveDeferred):
+            self.runner.execute_pending(
+                FakeLink(), GEOMETRY, lambda _action: True,
+                approve_route=lambda action, _route, _wire: action.reason == "knight_stage",
+            )
+        saved = self.store.load()
+        self.assertEqual(saved.pending.next_action, 1)
+        self.assertEqual(saved.pending.phase, "ready")
+        self.assertEqual(saved.physical_squares["b3"], "P")
+        self.assertNotIn("b2", saved.physical_squares)
+        self.assertEqual(saved.physical_squares["b1"], "N")
+        self.assertEqual(saved.moves, [])
+
+        resumed = GameRunner(saved, self.store, allow_tight_routes=True)
+        routes = []
+
+        def approve(action, route, _wire) -> bool:
+            routes.append((action.reason, route.clearance_ignored))
+            return True
+
+        link = FakeLink()
+        resumed.execute_pending(link, GEOMETRY, lambda _action: True, approve)
+        self.assertEqual(routes, [
+            ("knight_clearance_move", False),
+            ("knight_restore", False),
+        ])
+        self.assertEqual(len(link.carries), 2)
+        self.assertEqual(resumed.state.moves, ["b1c3"])
+        self.assertEqual(resumed.state.physical_squares["c3"], "N")
+        self.assertEqual(resumed.state.physical_squares["b2"], "P")
+        self.assertNotIn("b3", resumed.state.physical_squares)
+        self.assertIsNone(resumed.state.pending)
+        self.assertEqual(self.store.load().to_json(), resumed.state.to_json())
 
 
 if __name__ == "__main__":

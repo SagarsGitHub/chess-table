@@ -16,6 +16,38 @@ bool pointOnSegment(HalfSquarePoint p, HalfSquarePoint a, HalfSquarePoint b) {
     const int16_t dot = px * dx + py * dy;
     return px * dy == py * dx && dot >= 0 && dot <= dx * dx + dy * dy;
 }
+
+float distanceToSegmentSquared(BoardPoint p, BoardPoint a, BoardPoint b) {
+    const float dx = b.x - a.x, dy = b.y - a.y;
+    const float lengthSquared = dx * dx + dy * dy;
+    const float along = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSquared;
+    const float t = fmaxf(0.0f, fminf(1.0f, along));
+    const float x = p.x - a.x - t * dx, y = p.y - a.y - t * dy;
+    return x * x + y * y;
+}
+}
+
+BoardController::StartError BoardController::prepareReleaseTarget(
+    BoardPoint previous, BoardPoint nominal, uint8_t movingId, BoardPoint &release) const {
+    const float dx = nominal.x - previous.x, dy = nominal.y - previous.y;
+    const float length = sqrtf(dx * dx + dy * dy);
+    if (length <= 0.0f) return StartError::Route;
+    float scale = Config::DELIVERY_OVERSHOOT_MM / length;
+    for (uint8_t attempt = 0; attempt < 2; ++attempt) {
+        release = {nominal.x + dx * scale, nominal.y + dy * scale};
+        if (inside(0, lroundf(release.x * Config::PULSES_PER_MM)) &&
+            inside(1, lroundf(release.y * Config::PULSES_PER_MM))) {
+            const float requiredSquared = Config::PIECE_DIAMETER_MM * Config::PIECE_DIAMETER_MM;
+            for (uint8_t occupied = 0; occupied < 96; ++occupied) {
+                if (occupied == movingId || !pieces_.occupied(occupied)) continue;
+                if (distanceToSegmentSquared(routePoint(locationHalf(occupied)), nominal, release) <
+                    requiredSquared) return StartError::Route;
+            }
+            return StartError::None;
+        }
+        scale *= 0.90f;
+    }
+    return StartError::Geometry;
 }
 
 BoardController::StartError BoardController::startCarry(
@@ -73,12 +105,102 @@ BoardController::StartError BoardController::startCarry(
                 pointOnSegment(locationHalf(occupied), previous, p)) return StartError::Route;
         }
     }
+    BoardPoint release = routePoint(points[count - 1]);
+    if (destination < 64) {
+        const StartError releaseError = prepareReleaseTarget(
+            routePoint(points[count - 2]), release, source, release);
+        if (releaseError != StartError::None) return releaseError;
+    }
     if (!preflight()) return StartError::Geometry;
     for (uint8_t i = 0; i < count; ++i) route_[i] = points[i];
     routeCount_ = count;
     routeIndex_ = 0;
     source_ = source; destination_ = destination;
+    releaseTarget_ = release;
     operation_ = Operation::Carry;
+    result_ = Result::None;
+    waitForRelease();
+    return StartError::None;
+}
+
+BoardController::StartError BoardController::startCarryOffset(
+    uint8_t source, int8_t dx, int8_t dy, uint8_t destination,
+    const HalfSquarePoint *points, uint8_t count) {
+    // Keep the source center as the first *encoded* waypoint, so the normal
+    // CARRY validator still checks topology and occupancy. The actual pickup
+    // and first loaded leg start at the previously commanded offset corner.
+    if (isActive() || axes_[0]->isRunning() || axes_[1]->isRunning() ||
+        calibrations_[0]->isActive() || calibrations_[1]->isActive()) return StartError::Busy;
+    if (!referenced()) return StartError::Reference;
+    if (source >= 64 || destination >= 64 || source == destination ||
+        (dx != -1 && dx != 1) || (dy != -1 && dy != 1) ||
+        points == nullptr || count < 2 || count > MAX_WAYPOINTS) return StartError::Route;
+    if (!pieces_.canMove(source, destination)) return StartError::Map;
+    const HalfSquarePoint sourcePoint = locationHalf(source);
+    if (points[0].x != sourcePoint.x || points[0].y != sourcePoint.y)
+        return StartError::Route;
+
+    const BoardPoint center = routePoint(sourcePoint);
+    const float inset = 0.30f * Config::BOARD_SQUARE_MM;
+    const BoardPoint corner = {center.x + dx * inset, center.y + dy * inset};
+    if (!inside(0, lroundf(corner.x * Config::PULSES_PER_MM)) ||
+        !inside(1, lroundf(corner.y * Config::PULSES_PER_MM))) return StartError::Geometry;
+    const BoardPoint firstGrid = routePoint(points[1]);
+    if (!inside(0, lroundf(firstGrid.x * Config::PULSES_PER_MM)) ||
+        !inside(1, lroundf(firstGrid.y * Config::PULSES_PER_MM))) return StartError::Geometry;
+    const float requiredSquared = Config::PIECE_DIAMETER_MM * Config::PIECE_DIAMETER_MM;
+    for (uint8_t occupied = 0; occupied < 96; ++occupied) {
+        if (occupied == source || !pieces_.occupied(occupied)) continue;
+        const BoardPoint standing = routePoint(locationHalf(occupied));
+        if (distanceToSegmentSquared(standing, corner, firstGrid) < requiredSquared)
+            return StartError::Route;
+    }
+
+    // Every valid board-to-board route has a grid waypoint before delivery,
+    // so startCarry computes its final loaded vector from the same waypoint.
+    const StartError result = startCarry(source, destination, points, count);
+    if (result != StartError::None) return result;
+    offsetStart_ = corner;
+    operation_ = Operation::CarryOffset;
+    return StartError::None;
+}
+
+BoardController::StartError BoardController::startOffset(
+    uint8_t square, int8_t dx, int8_t dy, bool out) {
+    // OFFSET never changes MAP: the piece remains assigned to its own square.
+    // Validate the short loaded path before traveling to the pickup point.
+    if (isActive() || axes_[0]->isRunning() || axes_[1]->isRunning() ||
+        calibrations_[0]->isActive() || calibrations_[1]->isActive()) return StartError::Busy;
+    if (!referenced()) return StartError::Reference;
+    if (!pieces_.known() || square >= 64 || !pieces_.occupied(square)) return StartError::Map;
+    if ((dx != -1 && dx != 1) || (dy != -1 && dy != 1)) return StartError::Route;
+
+    const BoardPoint center = routePoint(locationHalf(square));
+    // 30% of one full square pitch on each axis: distinctly inside the square,
+    // never at a grid intersection or perimeter parking-slot center.
+    const float inset = 0.30f * Config::BOARD_SQUARE_MM;
+    const BoardPoint corner = {center.x + dx * inset, center.y + dy * inset};
+    if (!inside(0, lroundf(corner.x * Config::PULSES_PER_MM)) ||
+        !inside(1, lroundf(corner.y * Config::PULSES_PER_MM))) return StartError::Geometry;
+    for (uint8_t occupied = 0; occupied < 96; ++occupied) {
+        if (occupied == square || !pieces_.occupied(occupied)) continue;
+        const BoardPoint standing = routePoint(locationHalf(occupied));
+        const float required = Config::PIECE_DIAMETER_MM;
+        if (distanceToSegmentSquared(standing, center, corner) < required * required)
+            return StartError::Route;
+    }
+    const BoardPoint start = out ? center : corner;
+    const BoardPoint end = out ? corner : center;
+    BoardPoint release;
+    const StartError releaseError = prepareReleaseTarget(start, end, square, release);
+    if (releaseError != StartError::None) return releaseError;
+    if (!preflight()) return StartError::Geometry;
+    offsetStart_ = start;
+    releaseTarget_ = release;
+    source_ = square; destination_ = square;
+    routeCount_ = 2;
+    routeIndex_ = 0;
+    operation_ = Operation::Offset;
     result_ = Result::None;
     waitForRelease();
     return StartError::None;
@@ -105,7 +227,8 @@ BoardPoint BoardController::routePoint(HalfSquarePoint point) const {
 }
 
 bool BoardController::crowdedHorizontalSegment() const {
-    if (operation_ != Operation::Carry || routeIndex_ == 0) return false;
+    if ((operation_ != Operation::Carry && operation_ != Operation::CarryOffset) ||
+        routeIndex_ == 0) return false;
     const HalfSquarePoint a = route_[routeIndex_ - 1], b = route_[routeIndex_];
     // Only magnet-on grid-to-grid horizontal travel uses this slower profile.
     // Neighboring square centers one half-pitch above or below the lane can

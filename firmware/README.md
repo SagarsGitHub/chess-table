@@ -12,11 +12,11 @@ PlatformIO firmware for an Arduino Uno R3, two M415B drivers, TR6x12 actuators a
 
 ## Computer link
 
-The Uno accepts version 1 framed ASCII requests at 115200 baud: `HELLO`, `STATUS`, `GEOM`, `HOME`, `REF`, `SAVE`, `MAP`, `CARRY`, and `STOP`. See the [serial protocol](../docs/PROTOCOL.md) for frame IDs, replies, bitmap and waypoint encoding, errors, and recovery rules. The maximum request line is 96 bytes including the newline. An unframed `x` remains available as a bench stop.
+The Uno accepts version 1 framed ASCII requests at 115200 baud: `HELLO`, `STATUS`, `GEOM`, `HOME`, `REF`, `SAVE`, `MAP`, `CARRY`, `CARRY_OFFSET`, `OFFSET`, and `STOP`. `HELLO` advertises `OVER20` so the host can require the matching 20% delivery overshoot behavior. See the [serial protocol](../docs/PROTOCOL.md) for frame IDs, replies, bitmap and waypoint encoding, errors, and recovery rules. The maximum request line is 96 bytes including the newline. An unframed `x` remains available as a bench stop.
 
 After a reboot, the host must run `REF` or `HOME`, read live `GEOM`, reconcile the pieces, and send `MAP` before carrying. EEPROM stores measured geometry, not a live carriage reference or occupancy. `HOME` measures both axes; `REF` uses saved geometry and touches the MIN limits. `MAP` declares occupancy without sensing it. `DONE CARRY` follows the destination magnet-release dwell and confirms commanded steps, not physical delivery.
 
-The Uno checks route topology, occupied-center crossings, source/destination occupancy, measured bounds, and the 2–12-waypoint limit before moving. Parking-to-parking carries are unsupported. The host chooses parking slots and plans physical clearance; the firmware validates the command it receives.
+The Uno checks route topology, occupied-center crossings, source/destination occupancy, measured bounds, and the 2–12-waypoint limit before moving. Parking-to-parking carries are unsupported. `OFFSET` carries a piece from its square center to a fixed interior corner, or back, while leaving occupancy unchanged. It checks the short nominal segment against occupied centers and measured bounds before moving. `CARRY_OFFSET` picks up from that known corner and carries directly to a vacant board square, checking the actual first loaded segment against occupied centers. For `CARRY` and `CARRY_OFFSET` ending on a board square, and for `OFFSET OUT` and `OFFSET IN`, the loaded magnet continues past the nominal destination along the final incoming segment before releasing. It first tries 0.20 board pitch (6.25 mm), then 90% of that distance (5.625 mm) only if the first release pulse target exceeds measured travel bounds; it rejects the action if the retry also exceeds bounds. A `CARRY` to perimeter parking has no extension. The nominal route endpoint and occupancy map do not change. The Uno checks release bounds and 18 mm clearance from nominal occupied `MAP` centers along the extra segment before motion. The host preflights the extra segment against its configured clearance margin and known displaced-piece positions as well.
 
 ## Motion and limits
 
@@ -28,15 +28,16 @@ During board travel, limit inputs are sampled only while a motor is moving.
 A closure continuous for 3 ms stops both axes and drops the magnet. Brief
 pulses during movement and all idle/dwell switch activity are ignored. Each
 route segment starts a fresh 3 ms window, so a switch held before movement
-still stops it once motion begins. Commanded position and every waypoint must
-remain within the measured 2 mm software inset. A software stop is not a
-hardware emergency stop.
+still stops it once motion begins. Commanded position, every waypoint, and the
+magnet-release extension must remain within the measured 2 mm software inset.
+A software stop is not a hardware emergency stop.
 
 For CARRY, the 50 mm/s, 400 mm/s² loaded profile applies after pickup. A
 horizontal grid-to-grid segment next to any occupied board-square center in
 its X span uses 30 mm/s and 250 mm/s². The controller checks its occupancy
 map for each segment; it does not sense whether the neighboring piece actually
-moved. Vertical and diagonal legs keep the ordinary loaded profile. Empty
+moved. `OFFSET` also uses the 30 mm/s, 250 mm/s² loaded profile for its short
+diagonal. Vertical and diagonal CARRY legs keep the ordinary loaded profile. Empty
 carriage travel remains at 150 mm/s and 1000 mm/s²; HOME/REF use their separate
 seek and latch speeds. The 15-second watchdog applies to each segment,
 including the longest possible grid diagonal or crowded horizontal run.

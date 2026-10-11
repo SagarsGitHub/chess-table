@@ -36,6 +36,37 @@ class SimulatedLink:
         print(f"SIM CARRY {source_id} {destination_id} {point_chars}")
         return Completion(self.command_id, "CARRY", ())
 
+    def carry_offset(
+        self, source_id: str, corner: str, destination_id: str, point_chars: str,
+    ):
+        source, destination = int(source_id), int(destination_id)
+        if not 0 <= source < 64 or corner not in {"NW", "NE", "SW", "SE"}:
+            raise ValueError("invalid simulated CARRY_OFFSET arguments")
+        if (self.bitmap is None or not 0 <= destination < 96 or
+                not self.bitmap & (1 << source) or self.bitmap & (1 << destination)):
+            raise GameStateError("simulated controller rejected inconsistent CARRY_OFFSET occupancy")
+        self.bitmap = (self.bitmap & ~(1 << source)) | (1 << destination)
+        self.command_id += 1
+        print(f"SIM CARRY_OFFSET {source_id} {corner} {destination_id} {point_chars}")
+        return Completion(self.command_id, "CARRY_OFFSET", ())
+
+    def offset(self, square_id: int | str, corner: str, direction: str):
+        """Simulate a nudge without changing the square's occupancy bit."""
+        try:
+            square = int(square_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("square_id must be a board-square ID") from exc
+        if (type(square_id) not in {int, str} or
+                str(square) != str(square_id) or not 0 <= square < 64 or
+                corner not in {"NW", "NE", "SW", "SE"} or
+                direction not in {"OUT", "IN"}):
+            raise ValueError("invalid simulated OFFSET arguments")
+        if self.bitmap is None or not self.bitmap & (1 << square):
+            raise GameStateError("simulated controller rejected OFFSET on an empty square")
+        self.command_id += 1
+        print(f"SIM OFFSET {square} {corner} {direction}")
+        return Completion(self.command_id, "OFFSET", ())
+
     def close(self) -> None:
         pass
 

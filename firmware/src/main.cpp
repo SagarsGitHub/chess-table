@@ -20,7 +20,7 @@ Electromagnet electromagnet(Config::ELECTROMAGNET_RELAY_PIN);
 BoardController board(xAxis, yAxis, xCalibration, yCalibration, electromagnet);
 
 // At most one long command owns a request ID while loop() advances it.
-enum class Pending : uint8_t { None, Home, Ref, Carry };
+enum class Pending : uint8_t { None, Home, Ref, Carry, CarryOffset, Offset };
 Pending pending = Pending::None;
 uint16_t pendingId = 0, lastRequestId = 0;
 bool hasRequestId = false;
@@ -38,6 +38,19 @@ void error(uint16_t id, const __FlashStringHelper *code) {
 }
 void done(uint16_t id, const __FlashStringHelper *payload) {
     prefix(id); Serial.print(F("DONE ")); Serial.println(payload);
+}
+void replyToMotionStart(uint16_t id, BoardController::StartError result, Pending operation) {
+    // CARRY, CARRY_OFFSET, and OFFSET share the same start error contract.
+    // Only an accepted command takes ownership of the request ID.
+    switch (result) {
+        case BoardController::StartError::None:
+            pending = operation; pendingId = id; return;
+        case BoardController::StartError::Busy: error(id, F("BUSY")); return;
+        case BoardController::StartError::Reference: error(id, F("REFERENCE")); return;
+        case BoardController::StartError::Map: error(id, F("MAP")); return;
+        case BoardController::StartError::Route: error(id, F("ROUTE")); return;
+        case BoardController::StartError::Geometry: error(id, F("GEOMETRY")); return;
+    }
 }
 void clearPending() {
     pending = Pending::None;
@@ -122,6 +135,15 @@ bool locationArg(char *&cursor, uint8_t &location) {
     location = value;
     return true;
 }
+bool cornerArg(const char *letters, int8_t &dx, int8_t &dy) {
+    if (letters[0] == 'N') dy = 1;
+    else if (letters[0] == 'S') dy = -1;
+    else return false;
+    if (letters[1] == 'E') dx = 1;
+    else if (letters[1] == 'W') dx = -1;
+    else return false;
+    return true;
+}
 
 void processFrame() {
     frame[frameLength] = '\0';
@@ -145,15 +167,17 @@ void processFrame() {
     if (*p++ != ' ' || *p == '\0') { error(id, F("SYNTAX")); return; }
     char *verb = p;
     while (*p && *p != ' ') {
-        if (*p < 'A' || *p > 'Z') { error(id, F("SYNTAX")); return; }
+        if ((*p < 'A' || *p > 'Z') && *p != '_') { error(id, F("SYNTAX")); return; }
         ++p;
     }
     char *args = p;
     if (*p) { *p++ = '\0'; args = p; }
 
     // MAP carries 96 occupancy bits as 12 hex bytes. CARRY contains two
-    // decimal location IDs followed by half-square waypoint pairs. The
-    // remaining verbs require no arguments.
+    // decimal location IDs followed by half-square waypoint pairs;
+    // CARRY_OFFSET also names the known source corner. OFFSET contains an
+    // occupied square, interior corner, and travel direction.
+    // The remaining verbs require no arguments.
     if (strcmp(verb, "MAP") == 0) {
         if (busy()) { error(id, F("BUSY")); return; }
         if (strlen(args) != 24) { error(id, F("SYNTAX")); return; }
@@ -167,10 +191,20 @@ void processFrame() {
         else done(id, F("MAP"));
         return;
     }
-    if (strcmp(verb, "CARRY") == 0) {
+    const bool carryOffset = strcmp(verb, "CARRY_OFFSET") == 0;
+    if (strcmp(verb, "CARRY") == 0 || carryOffset) {
         uint8_t source, destination;
-        if (!locationArg(args, source) || *args++ != ' ' ||
-            !locationArg(args, destination) || *args++ != ' ') {
+        if (!locationArg(args, source) || *args++ != ' ') {
+            error(id, F("SYNTAX")); return;
+        }
+        int8_t dx = 0, dy = 0;
+        if (carryOffset) {
+            if (source >= 64 || strlen(args) < 3 || args[2] != ' ' ||
+                !cornerArg(args, dx, dy)) { error(id, F("SYNTAX")); return; }
+            args += 3;
+        }
+        if (!locationArg(args, destination) || *args++ != ' ' ||
+            (carryOffset && destination >= 64)) {
             error(id, F("SYNTAX")); return;
         }
         const uint8_t length = strlen(args);
@@ -185,21 +219,29 @@ void processFrame() {
             points[i] = {x, y};
         }
         const BoardController::StartError result =
-            board.startCarry(source, destination, points, length / 2);
-        switch (result) {
-            case BoardController::StartError::None:
-                pending = Pending::Carry; pendingId = id; return;
-            case BoardController::StartError::Busy: error(id, F("BUSY")); return;
-            case BoardController::StartError::Reference: error(id, F("REFERENCE")); return;
-            case BoardController::StartError::Map: error(id, F("MAP")); return;
-            case BoardController::StartError::Route: error(id, F("ROUTE")); return;
-            case BoardController::StartError::Geometry: error(id, F("GEOMETRY")); return;
+            carryOffset ? board.startCarryOffset(source, dx, dy, destination, points, length / 2) :
+                          board.startCarry(source, destination, points, length / 2);
+        replyToMotionStart(id, result, carryOffset ? Pending::CarryOffset : Pending::Carry);
+        return;
+    }
+    if (strcmp(verb, "OFFSET") == 0) {
+        uint8_t square;
+        if (!locationArg(args, square) || square >= 64 || *args++ != ' ' ||
+            strlen(args) < 5 || args[2] != ' ') {
+            error(id, F("SYNTAX")); return;
         }
+        int8_t dx, dy;
+        if (!cornerArg(args, dx, dy)) { error(id, F("SYNTAX")); return; }
+        const bool out = strcmp(args + 3, "OUT") == 0;
+        if (!out && strcmp(args + 3, "IN") != 0) { error(id, F("SYNTAX")); return; }
+        const BoardController::StartError result = board.startOffset(square, dx, dy, out);
+        replyToMotionStart(id, result, Pending::Offset);
+        return;
     }
     if (*args) { error(id, F("SYNTAX")); return; }
     if (strcmp(verb, "HELLO") == 0) {
         if (busy()) { error(id, F("BUSY")); return; }
-        done(id, F("HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,SAVE,GEOM"));
+        done(id, F("HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,CARRY_OFFSET,OFFSET,SAVE,GEOM,OVER20"));
     } else if (strcmp(verb, "STATUS") == 0) {
         prefix(id); Serial.print(F("DONE STATUS REF=")); Serial.print(board.referenced() ? '1' : '0');
         Serial.print(F(" BUSY=")); Serial.print(busy() ? '1' : '0');
@@ -264,10 +306,13 @@ void loop() {
     // Keep both state machines responsive before consuming one serial byte.
     updateHoming();
     board.update();
-    if (pending == Pending::Carry) {
+    if (pending == Pending::Carry || pending == Pending::CarryOffset ||
+        pending == Pending::Offset) {
         const BoardController::Result result = board.takeResult();
         if (result != BoardController::Result::None) {
-            if (result == BoardController::Result::Complete) done(pendingId, F("CARRY"));
+            if (result == BoardController::Result::Complete)
+                done(pendingId, pending == Pending::Carry ? F("CARRY") :
+                    pending == Pending::CarryOffset ? F("CARRY_OFFSET") : F("OFFSET"));
             else error(pendingId, F("MOTION"));
             clearPending();
         }

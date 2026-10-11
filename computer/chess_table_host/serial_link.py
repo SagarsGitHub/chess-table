@@ -21,6 +21,8 @@ import threading
 import time
 from typing import Callable, Deque, Protocol
 
+from .protocol_limits import MAX_CARRY_WAYPOINTS
+
 
 BAUD_RATE = 115200
 PROTOCOL_VERSION = 1
@@ -29,14 +31,14 @@ MAX_FRAME_BYTES = 96
 # Keep outgoing commands bounded separately from incoming replies.
 MAX_REPLY_BYTES = 128
 MAX_COMMAND_ID = 65535
-MAX_CARRY_WAYPOINTS = 12
 _TOKEN = re.compile(r"^[!-~]+$")
 _REPLY = re.compile(r"^@([1-9][0-9]{0,4}) (ACK|DONE|ERR)(?: (.*))?$")
 _EVENT = re.compile(r"^!([A-Z][A-Z0-9_]*)(?: (.*))?$")
 _SAFE_REJECTIONS = frozenset({"BUSY", "SYNTAX", "LENGTH"})
-_CARRY_PREFLIGHT_REJECTIONS = frozenset({"REFERENCE", "MAP", "ROUTE"})
+_MOTION_PREFLIGHT_REJECTIONS = frozenset({"REFERENCE", "MAP", "ROUTE"})
 _HEX_MAP = re.compile(r"^[0-9A-F]{24}$")
 _BASE17_POINTS = re.compile(r"^[0-9A-G]+$")
+_CORNERS = frozenset({"NW", "NE", "SW", "SE"})
 
 
 class ByteStream(Protocol):
@@ -407,16 +409,56 @@ class SerialLink:
         destination = self._location_id_argument(destination_id, "destination_id")
         if source == destination:
             raise ValueError("source and destination must differ")
-        if (
-            type(point_chars) is not str
-            or len(point_chars) < 4
-            or len(point_chars) > 2 * MAX_CARRY_WAYPOINTS
-            or len(point_chars) % 2 != 0
-            or _BASE17_POINTS.fullmatch(point_chars) is None
-        ):
-            raise ValueError("point_chars must encode 2..12 uppercase base-17 x/y pairs")
+        self._validate_point_chars(point_chars)
         reply = self.request("CARRY", source, destination, point_chars, timeout=timeout)
         self._expect_plain_done(reply, "CARRY")
+        return reply
+
+    def carry_offset(
+        self,
+        source_id: int | str,
+        corner: str,
+        destination_id: int | str,
+        point_chars: str,
+        *,
+        timeout: float | None = None,
+    ) -> Completion:
+        """Carry a rook directly from its confirmed in-square offset corner."""
+        source = self._location_id_argument(source_id, "source_id")
+        destination = self._location_id_argument(destination_id, "destination_id")
+        if int(source) >= 64:
+            raise ValueError("source_id must identify a board square in 0..63")
+        if source == destination:
+            raise ValueError("source and destination must differ")
+        self._validate_corner(corner)
+        self._validate_point_chars(point_chars)
+        reply = self.request(
+            "CARRY_OFFSET", source, corner, destination, point_chars, timeout=timeout,
+        )
+        self._expect_plain_done(reply, "CARRY_OFFSET")
+        return reply
+
+    def offset(
+        self,
+        square_id: int | str,
+        corner: str,
+        direction: str,
+        *,
+        timeout: float | None = None,
+    ) -> Completion:
+        """Nudge an occupied board square toward a corner or back to center.
+
+        The occupancy bitmap is unchanged. As with ``CARRY``, a matching
+        controller completion proves command completion, not piece placement.
+        """
+        square = self._location_id_argument(square_id, "square_id")
+        if int(square) >= 64:
+            raise ValueError("square_id must identify a board square in 0..63")
+        self._validate_corner(corner)
+        if type(direction) is not str or direction not in {"OUT", "IN"}:
+            raise ValueError("direction must be OUT or IN")
+        reply = self.request("OFFSET", square, corner, direction, timeout=timeout)
+        self._expect_plain_done(reply, "OFFSET")
         return reply
 
     def stop(self, *, timeout: float = 5.0) -> Completion:
@@ -533,10 +575,26 @@ class SerialLink:
         raise ValueError(f"{label} must be a canonical decimal position ID in 0..95")
 
     @staticmethod
+    def _validate_corner(corner: str) -> None:
+        if type(corner) is not str or corner not in _CORNERS:
+            raise ValueError("corner must be NW, NE, SW, or SE")
+
+    @staticmethod
+    def _validate_point_chars(point_chars: str) -> None:
+        if (
+            type(point_chars) is not str
+            or len(point_chars) < 4
+            or len(point_chars) > 2 * MAX_CARRY_WAYPOINTS
+            or len(point_chars) % 2 != 0
+            or _BASE17_POINTS.fullmatch(point_chars) is None
+        ):
+            raise ValueError("point_chars must encode 2..12 uppercase base-17 x/y pairs")
+
+    @staticmethod
     def _safe_rejection(verb: str, code: str) -> bool:
         if code in _SAFE_REJECTIONS:
             return True
-        if verb == "CARRY" and code in _CARRY_PREFLIGHT_REJECTIONS:
+        if verb in {"CARRY", "CARRY_OFFSET", "OFFSET"} and code in _MOTION_PREFLIGHT_REJECTIONS:
             return True
         if (verb == "GEOM" or verb == "SAVE") and code == "REFERENCE":
             return True

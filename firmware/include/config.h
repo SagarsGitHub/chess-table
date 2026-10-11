@@ -79,6 +79,9 @@ constexpr float END_CLEARANCE_MM = 2.0f; // Inset from each measured trip point.
 // Nominal circular-piece clearance is not a veto on knight/parking routes.
 constexpr float BOARD_SQUARE_MM = 31.25f;
 constexpr float PIECE_DIAMETER_MM = 18.0f;
+// Command the loaded magnet past a board delivery point by this distance.
+// The piece tends to lag behind the carriage; verify the amount on hardware.
+constexpr float DELIVERY_OVERSHOOT_MM = 0.20f * BOARD_SQUARE_MM;
 } // namespace Config
 
 static_assert(Config::SCREW_LEAD_MM > 0, "Screw lead must be positive");

@@ -29,10 +29,6 @@ bool BoardController::moveTo(BoardPoint p, bool pieceProfile, bool tightHorizont
             fail(F("Board motion profile rejected.")); return false;
         }
     }
-    Serial.print(F("Move X,Y (mm): ")); Serial.print(p.x, 3); Serial.print(','); Serial.print(p.y, 3);
-    Serial.print(tightHorizontal ? F("; tight piece mm/s=") :
-        pieceProfile ? F("; piece mm/s=") : F("; travel mm/s="));
-    Serial.println(speed, 1);
     axes_[0]->resetBoardLimitFilter(); axes_[1]->resetBoardLimitFilter();
     bool accepted = true;
     // Submit both ramps before the AVR ramp-management interrupt can run.
@@ -56,7 +52,16 @@ void BoardController::waitForRelease() {
 }
 
 void BoardController::moveRoutePoint() {
-    moveTo(routePoint(route_[routeIndex_]), routeIndex_ != 0, crowdedHorizontalSegment());
+    if (operation_ == Operation::Offset) {
+        // Use the conservative loaded profile for the short corner nudge.
+        moveTo(routeIndex_ == 0 ? offsetStart_ : releaseTarget_, routeIndex_ != 0,
+               routeIndex_ != 0);
+    } else if (operation_ == Operation::CarryOffset && routeIndex_ == 0) {
+        moveTo(offsetStart_, false);
+    } else {
+        moveTo(routeIndex_ + 1 == routeCount_ ? releaseTarget_ : routePoint(route_[routeIndex_]),
+               routeIndex_ != 0, crowdedHorizontalSegment());
+    }
 }
 
 void BoardController::restoreProfiles() {
@@ -69,9 +74,10 @@ void BoardController::restoreProfiles() {
 void BoardController::cancel() {
     axes_[0]->stop(); axes_[1]->stop(); magnet_.off();
     if (isActive()) restoreProfiles();
-    // A canceled carry may have moved the piece partway; the host must MAP
-    // again after reconciling the physical board.
-    if (operation_ == Operation::Carry) pieces_.invalidate();
+    // A canceled carry or offset may have moved the piece partway; the host
+    // must inspect and MAP again after reconciling the physical board.
+    if (operation_ == Operation::Carry || operation_ == Operation::CarryOffset ||
+        operation_ == Operation::Offset) pieces_.invalidate();
     operation_ = Operation::Idle;
     result_ = Result::Canceled;
     invalidate();
@@ -86,7 +92,8 @@ void BoardController::fail(const __FlashStringHelper *message) {
 
 void BoardController::finish() {
     magnet_.off(); restoreProfiles();
-    pieces_.complete(source_, destination_);
+    if (operation_ == Operation::Carry || operation_ == Operation::CarryOffset)
+        pieces_.complete(source_, destination_);
     Serial.println(F("Piece motion complete; reference retained."));
     operation_ = Operation::Idle;
     result_ = Result::Complete;
@@ -113,7 +120,6 @@ void BoardController::update() {
         if (axes_[0]->positionPulses() != targets_[0] || axes_[1]->positionPulses() != targets_[1]) {
             fail(F("Board destination not reached.")); return;
         }
-        Serial.print(F("Waypoint ")); Serial.print(routeIndex_); Serial.print('/'); Serial.println(routeCount_ - 1);
         stageStartedMs_ = millis();
         // Pickup and release each wait for the relay/magnet to settle before
         // moving or reporting DONE; intermediate waypoints use a short dwell.

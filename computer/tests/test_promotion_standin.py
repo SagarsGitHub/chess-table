@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import chess
 
+from chess_table_host.checkpoint import STATE_VERSION
 from chess_table_host.game import (
     GameRunner, GameState, GameStateError, JsonGameStore, ReconciliationRequired,
 )

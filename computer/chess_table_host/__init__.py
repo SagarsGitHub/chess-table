@@ -1,4 +1,4 @@
-"""Logical chess move planning for the computer side of the table."""
+"""Computer-side chess planning, physical routing, and wire encoding."""
 
 from .planner import (
     BoardSquare,
@@ -7,9 +7,11 @@ from .planner import (
     NoEmptyParkingSlotError,
     ParkingInventory,
     ParkingSlot,
+    PieceOffset,
     PlanError,
     PromotionPieceUnavailableError,
     PromotionPolicy,
+    RookOffset,
     SlotSelector,
     Transfer,
     UnsupportedVariantError,
@@ -40,9 +42,11 @@ __all__ = [
     "NoEmptyParkingSlotError",
     "ParkingInventory",
     "ParkingSlot",
+    "PieceOffset",
     "PlanError",
     "PromotionPieceUnavailableError",
     "PromotionPolicy",
+    "RookOffset",
     "SlotSelector",
     "Transfer",
     "UnsupportedVariantError",

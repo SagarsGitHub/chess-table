@@ -88,22 +88,36 @@ class PlannerTests(unittest.TestCase):
             ),
         )
 
-    def test_castling_has_separate_king_and_rook_transfers(self) -> None:
-        board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
+    def test_castling_logical_plan_has_king_and_rook_for_each_side(self) -> None:
         parking = ParkingInventory.empty()
-        for uci, king_destination, rook_source, rook_destination in (
-            ("e1g1", "g1", "h1", "f1"),
-            ("e1c1", "c1", "a1", "d1"),
+        for turn, uci, king_source, king_destination, rook_source, rook_destination in (
+            ("w", "e1g1", "e1", "g1", "h1", "f1"),
+            ("w", "e1c1", "e1", "c1", "a1", "d1"),
+            ("b", "e8g8", "e8", "g8", "h8", "f8"),
+            ("b", "e8c8", "e8", "c8", "a8", "d8"),
         ):
             with self.subTest(uci=uci):
+                board = chess.Board(f"r3k2r/8/8/8/8/8/8/R3K2R {turn} KQkq - 0 1")
                 plan = plan_move(board, uci, parking)
+                rook = "R" if turn == "w" else "r"
+                king = "K" if turn == "w" else "k"
                 self.assertEqual(
                     plan.actions,
                     (
-                        Transfer("K", BoardSquare("e1"), BoardSquare(king_destination), "castle_king"),
-                        Transfer("R", BoardSquare(rook_source), BoardSquare(rook_destination), "castle_rook"),
+                        Transfer(king, BoardSquare(king_source), BoardSquare(king_destination), "castle_king"),
+                        Transfer(rook, BoardSquare(rook_source), BoardSquare(rook_destination), "castle_rook"),
                     ),
                 )
+                self.assertEqual(plan.parking_after, parking)
+
+    def test_castling_logical_plan_does_not_claim_a_parking_slot(self) -> None:
+        board = chess.Board("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1")
+        slots = [None] * 32
+        slots[8] = "p"
+        parking = ParkingInventory(tuple(slots))
+        plan = plan_move(board, "e1g1", parking)
+        self.assertEqual(len(plan.actions), 2)
+        self.assertEqual(plan.parking_after, parking)
 
     def test_manual_promotion_has_explicit_operator_step(self) -> None:
         board = chess.Board("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")

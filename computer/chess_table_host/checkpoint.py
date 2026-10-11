@@ -17,7 +17,10 @@ import chess
 
 from .game_errors import GameStateError
 from .physical import _apply_action, _board_pieces, _replay_physical
-from .planner import Action, BoardSquare, ManualReplacement, ParkingInventory, ParkingSlot, Transfer
+from .planner import (
+    Action, BoardSquare, ManualReplacement, ParkingInventory, ParkingSlot,
+    PieceOffset, RookOffset, Transfer,
+)
 
 
 STATE_VERSION = 6
@@ -147,6 +150,75 @@ def _migrate_version_five(value: dict[str, object]) -> dict[str, object]:
     return migrated
 
 
+def _advance_offsets(
+    action: Action,
+    offsets: dict[str, RookOffset | PieceOffset],
+    *,
+    castling: bool,
+) -> None:
+    """Replay the known in-square positions alongside the inventory snapshot.
+
+    An OFFSET leaves the occupancy map unchanged. Keeping its state here
+    makes a saved confirmed prefix sufficient to recover every active corner.
+    """
+    if isinstance(action, (RookOffset, PieceOffset)):
+        if isinstance(action, RookOffset) and not castling:
+            raise GameStateError("rook offset requires a castling move")
+        previous = offsets.get(action.square.name)
+        if action.direction == "OUT":
+            if previous is not None:
+                raise GameStateError(f"piece is already offset at {action.square.name}")
+            offsets[action.square.name] = action
+        elif (previous is None or type(previous) is not type(action) or
+              action.corner != previous.corner or action.piece != previous.piece):
+            raise GameStateError("offset restoration does not match its departure")
+        else:
+            del offsets[action.square.name]
+        return
+    if isinstance(action, Transfer):
+        source = action.source.name if isinstance(action.source, BoardSquare) else None
+        destination = (action.destination.name
+                       if isinstance(action.destination, BoardSquare) else None)
+        if action.reason == "castle_rook_from_offset":
+            previous = offsets.get(source) if source is not None else None
+            if (not castling or not isinstance(previous, RookOffset) or
+                    action.piece != previous.piece):
+                raise GameStateError("offset-source rook carry lacks its matching offset")
+            if destination in offsets:
+                raise GameStateError("cannot transfer into an offset piece square")
+            del offsets[source]
+        elif source in offsets or destination in offsets:
+            raise GameStateError("cannot transfer through an offset piece square")
+        return
+    if isinstance(action, ManualReplacement) and action.square.name in offsets:
+        raise GameStateError("cannot replace a piece while it is offset")
+
+
+def _validate_offset_wire(action: Action, route: tuple[str, ...] | None) -> None:
+    if route is not None and isinstance(action, (RookOffset, PieceOffset)):
+        expected = (str(chess.parse_square(action.square.name)), action.corner, action.direction)
+        if route != expected:
+            raise GameStateError("active offset route does not match its action")
+
+
+def _validate_offset_source_wire(
+    action: Action, route: tuple[str, ...] | None,
+    offsets: dict[str, RookOffset | PieceOffset],
+) -> None:
+    """Tie an in-flight rook pickup to its confirmed within-square corner."""
+    if (route is None or not isinstance(action, Transfer) or
+            action.reason != "castle_rook_from_offset"):
+        return
+    if not isinstance(action.source, BoardSquare) or not isinstance(action.destination, BoardSquare):
+        raise GameStateError("offset-source rook carry must use board squares")
+    previous = offsets.get(action.source.name)
+    if not isinstance(previous, RookOffset) or route[:3] != (
+        str(chess.parse_square(action.source.name)), previous.corner,
+        str(chess.parse_square(action.destination.name)),
+    ):
+        raise GameStateError("active offset-source route does not match the confirmed rook corner")
+
+
 def _location_to_json(location: BoardSquare | ParkingSlot) -> dict[str, object]:
     if isinstance(location, BoardSquare):
         return {"square": location.name}
@@ -171,6 +243,18 @@ def _action_to_json(action: Action) -> dict[str, object]:
             "destination": _location_to_json(action.destination),
             "reason": action.reason,
         }
+    if isinstance(action, RookOffset):
+        return {
+            "type": "rook_offset", "piece": action.piece,
+            "square": action.square.name, "corner": action.corner,
+            "direction": action.direction, "reason": action.reason,
+        }
+    if isinstance(action, PieceOffset):
+        return {
+            "type": "piece_offset", "piece": action.piece,
+            "square": action.square.name, "corner": action.corner,
+            "direction": action.direction, "reason": action.reason,
+        }
     return {
         "type": "manual_replacement", "square": action.square.name,
         "pawn": action.pawn, "replacement": action.replacement,
@@ -184,6 +268,16 @@ def _action_from_json(value: object) -> Action:
         return Transfer(
             value["piece"], _location_from_json(value["source"]),
             _location_from_json(value["destination"]), value["reason"],
+        )
+    if value.get("type") == "rook_offset":
+        return RookOffset(
+            value["piece"], BoardSquare(value["square"]), value["corner"],
+            value["direction"], value["reason"],
+        )
+    if value.get("type") == "piece_offset":
+        return PieceOffset(
+            value["piece"], BoardSquare(value["square"]), value["corner"],
+            value["direction"], value["reason"],
         )
     if value.get("type") == "manual_replacement":
         return ManualReplacement(
@@ -200,7 +294,8 @@ class PendingMove:
     actions: tuple[Action, ...]
     next_action: int = 0
     phase: str = "ready"  # ready, in_flight, awaiting_confirmation
-    active_route: tuple[str, str, str] | None = None
+    active_route: tuple[str, ...] | None = None
+    castle_clearance_override: bool = False
     remote_request_id: str | None = None
 
     def to_json(self) -> dict[str, object]:
@@ -210,6 +305,7 @@ class PendingMove:
             "actions": [_action_to_json(action) for action in self.actions],
             "next_action": self.next_action, "phase": self.phase,
             "active_route": list(self.active_route) if self.active_route else None,
+            "castle_clearance_override": self.castle_clearance_override,
             "remote_request_id": self.remote_request_id,
         }
 
@@ -218,22 +314,26 @@ class PendingMove:
         if not isinstance(value, dict):
             raise GameStateError("invalid pending move")
         route = value.get("active_route")
-        if route is not None and (not isinstance(route, list) or len(route) != 3 or
+        if route is not None and (not isinstance(route, list) or len(route) not in {3, 4} or
                                   any(not isinstance(token, str) for token in route)):
             raise GameStateError("invalid active route")
+        castle_clearance_override = value.get("castle_clearance_override", False)
+        if type(castle_clearance_override) is not bool:
+            raise GameStateError("castle clearance override must be a boolean")
         return cls(
             uci=value["uci"], fen_after=value["fen_after"],
             parking_after=ParkingInventory(tuple(value["parking_after"])),
             actions=tuple(_action_from_json(item) for item in value["actions"]),
             next_action=value["next_action"], phase=value["phase"],
             active_route=tuple(route) if route is not None else None,
+            castle_clearance_override=castle_clearance_override,
             remote_request_id=value.get("remote_request_id"),
         )
 
 
 @dataclass
 class PendingReset:
-    actions: tuple[Transfer, ...]
+    actions: tuple[Transfer | PieceOffset, ...]
     next_action: int = 0
     phase: str = "ready"  # ready, in_flight, awaiting_confirmation
     active_route: tuple[str, str, str] | None = None
@@ -255,8 +355,9 @@ class PendingReset:
                                   any(not isinstance(token, str) for token in route)):
             raise GameStateError("invalid reset active route")
         actions = tuple(_action_from_json(item) for item in value["actions"])
-        if not actions or any(not isinstance(action, Transfer) for action in actions):
-            raise GameStateError("pending reset requires transfer actions")
+        if (not actions or not any(isinstance(action, Transfer) for action in actions) or
+                any(not isinstance(action, (Transfer, PieceOffset)) for action in actions)):
+            raise GameStateError("pending reset requires transfer and optional offset actions")
         return cls(
             actions=actions, next_action=value["next_action"],
             phase=value["phase"],
@@ -427,25 +528,34 @@ class GameState:
             raise GameStateError("move and board reset cannot both be pending")
         if self.initial_fen != chess.Board().fen():
             raise GameStateError("board reset requires a standard-start game")
-        if (not reset.actions or any(not isinstance(action, Transfer)
-                                     for action in reset.actions)):
-            raise GameStateError("pending reset requires transfer actions")
+        if (not reset.actions or
+                not any(isinstance(action, Transfer) for action in reset.actions) or
+                any(not isinstance(action, (Transfer, PieceOffset))
+                    for action in reset.actions)):
+            raise GameStateError("pending reset requires transfer and optional offset actions")
         if (type(reset.next_action) is not int or
                 not 0 <= reset.next_action < len(reset.actions) or
                 reset.phase not in {"ready", "in_flight", "awaiting_confirmation"}):
             raise GameStateError("invalid reset action cursor")
         if (reset.phase == "ready") != (reset.active_route is None):
             raise GameStateError("inconsistent reset phase and route")
+        if reset.active_route is not None and len(reset.active_route) != 3:
+            raise GameStateError("active reset route does not match its physical action")
+        _validate_offset_wire(reset.actions[reset.next_action], reset.active_route)
         squares = self.expected_physical_squares()
         slots = list(self.committed_parking.slots)
-        # The physical snapshot records only confirmed transfers. Replay that
-        # prefix before checking that the remaining plan reaches home.
-        for action in reset.actions[:reset.next_action]:
+        offsets: dict[str, RookOffset | PieceOffset] = {}
+        # The physical snapshot records confirmed transfers while this replay
+        # also recovers the in-square offsets that occupancy cannot express.
+        for index, action in enumerate(reset.actions):
+            if index == reset.next_action and (
+                squares != self.physical_squares or slots != self.physical_parking
+            ):
+                raise GameStateError("physical checkpoint differs from confirmed reset prefix")
+            _advance_offsets(action, offsets, castling=False)
             _apply_action(squares, slots, action)
-        if squares != self.physical_squares or slots != self.physical_parking:
-            raise GameStateError("physical checkpoint differs from confirmed reset prefix")
-        for action in reset.actions[reset.next_action:]:
-            _apply_action(squares, slots, action)
+        if offsets:
+            raise GameStateError("pending reset leaves a piece off center")
         if squares != _board_pieces(chess.Board()) or any(slots):
             raise GameStateError("reset actions do not restore the standard position")
 
@@ -463,6 +573,13 @@ class GameState:
                     isinstance(pending.actions[pending.next_action], ManualReplacement) and
                     pending.active_route is None):
                 raise GameStateError("inconsistent pending phase and route")
+        if pending.active_route is not None:
+            active_action = pending.actions[pending.next_action]
+            offset_carry = (isinstance(active_action, Transfer) and
+                            active_action.reason == "castle_rook_from_offset")
+            if len(pending.active_route) != (4 if offset_carry else 3):
+                raise GameStateError("active route does not match its physical action")
+            _validate_offset_wire(active_action, pending.active_route)
         try:
             move = board.parse_uci(pending.uci)
             expected = board.copy()
@@ -471,12 +588,38 @@ class GameState:
             raise GameStateError("pending UCI is illegal") from exc
         if expected.fen() != pending.fen_after:
             raise GameStateError("pending resulting FEN does not match legal move")
+        if type(pending.castle_clearance_override) is not bool:
+            raise GameStateError("castle clearance override must be a boolean")
+        if pending.castle_clearance_override and (
+            not board.is_castling(move) or len(pending.actions) != 3 or
+            not isinstance(pending.actions[0], RookOffset) or
+            pending.actions[0].direction != "OUT" or
+            not isinstance(pending.actions[1], Transfer) or
+            pending.actions[1].reason != "castle_king" or
+            not isinstance(pending.actions[2], Transfer) or
+            pending.actions[2].reason != "castle_rook_from_offset"
+        ):
+            raise GameStateError("castle clearance override requires an offset-rook castling plan")
         squares = self.expected_physical_squares()
         slots = list(self.committed_parking.slots)
-        for action in pending.actions[:pending.next_action]:
+        offsets: dict[str, RookOffset | PieceOffset] = {}
+        for index, action in enumerate(pending.actions):
+            if index == pending.next_action and (
+                squares != self.physical_squares or slots != self.physical_parking
+            ):
+                raise GameStateError("physical checkpoint differs from confirmed action prefix")
+            if index == pending.next_action:
+                _validate_offset_source_wire(action, pending.active_route, offsets)
+            _advance_offsets(action, offsets, castling=board.is_castling(move))
             _apply_action(squares, slots, action)
-        if squares != self.physical_squares or slots != self.physical_parking:
-            raise GameStateError("physical checkpoint differs from confirmed action prefix")
+        if offsets:
+            raise GameStateError("pending move leaves a piece off center")
+        _, expected_physical = _replay_physical(
+            self.initial_fen, [*self.moves, pending.uci]
+        )
+        if (squares != expected_physical or
+                tuple(slots) != pending.parking_after.slots):
+            raise GameStateError("pending actions do not match the legal position")
 
     def to_json(self) -> dict[str, object]:
         self.validate()

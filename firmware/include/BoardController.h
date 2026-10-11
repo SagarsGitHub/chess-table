@@ -6,7 +6,7 @@
 #include "BoardStorage.h"
 #include "PieceMap.h"
 
-// A nonblocking CARRY owns both axes and the magnet until completion.
+// A nonblocking CARRY, CARRY_OFFSET, or OFFSET owns both axes and the magnet.
 // Occupancy describes commanded centers; no physical piece sensors are present.
 class BoardController {
 public:
@@ -31,6 +31,15 @@ public:
     // Validate the entire commanded route before starting any motor or magnet.
     StartError startCarry(uint8_t source, uint8_t destination,
                           const HalfSquarePoint *points, uint8_t count);
+    // Pick up at a rook's known in-square corner and carry directly to a board
+    // square. points[0] is still the source center for normal route validation;
+    // the first loaded leg physically starts at the corner instead.
+    StartError startCarryOffset(uint8_t source, int8_t dx, int8_t dy,
+                                uint8_t destination,
+                                const HalfSquarePoint *points, uint8_t count);
+    // Carry one piece within its occupied square. The occupancy bit is unchanged.
+    // dx/dy select a fixed interior corner; OUT moves center-to-corner, IN reverses it.
+    StartError startOffset(uint8_t square, int8_t dx, int8_t dy, bool out);
     // Completion is a one-shot event consumed by the framed serial protocol.
     Result takeResult() { const Result result = result_; result_ = Result::None; return result; }
 
@@ -40,7 +49,7 @@ public:
     void cancel(); // Stops both; drops magnet and invalidates references.
 
 private:
-    enum class Operation : uint8_t { Idle, Carry };
+    enum class Operation : uint8_t { Idle, Carry, CarryOffset, Offset };
     // Each route point has one moving stage and a timed magnet/dwell stage.
     // TravelRelease precedes the initial fast trip to the source.
     enum class Stage : uint8_t { TravelRelease, Moving, Dwell, Pickup, Release };
@@ -51,6 +60,8 @@ private:
     void moveRoutePoint();
     bool crowdedHorizontalSegment() const;
     BoardPoint routePoint(HalfSquarePoint point) const;
+    StartError prepareReleaseTarget(BoardPoint previous, BoardPoint nominal,
+                                    uint8_t movingId, BoardPoint &release) const;
     void restoreProfiles();
     void finish();
     void fail(const __FlashStringHelper *message);
@@ -66,6 +77,8 @@ private:
     Operation operation_ = Operation::Idle;
     Stage stage_ = Stage::Moving;
     HalfSquarePoint route_[MAX_WAYPOINTS] = {};
+    BoardPoint offsetStart_ = {};
+    BoardPoint releaseTarget_ = {};
     uint8_t routeIndex_ = 0;
     uint8_t routeCount_ = 0;
     uint8_t source_ = 0, destination_ = 0;
