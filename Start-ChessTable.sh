@@ -19,6 +19,9 @@ Options:
   --aina-token-file PATH      Override ~/.config/chess-table/aina.token
   --gui-port PORT             Browser GUI port (default: 8765)
   --aina-port PORT            Aina API port (default: 8766)
+  --enable-pocketmage         Enable trusted-LAN PocketMage control (no token)
+  --pocketmage-bind ADDRESS    IPv4 listen address (default: 0.0.0.0)
+  --pocketmage-port PORT       PocketMage API port (default: 8767)
   --engine PATH               Override Stockfish executable or directory
   --full-home                 Request full HOME (physical mode only)
   --dry-run                   Validate and show settings without starting the host
@@ -130,16 +133,16 @@ discover_serial_port() {
 }
 
 assert_loopback_port_available() {
-    local python=$1 port=$2 purpose=$3 option=$4
+    local python=$1 port=$2 purpose=$3 option=$4 address=${5:-127.0.0.1}
     if ! "$python" -c '
 import socket, sys
 try:
     with socket.socket() as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("127.0.0.1", int(sys.argv[1])))
+        sock.bind((sys.argv[2], int(sys.argv[1])))
 except OSError:
     sys.exit(1)
-' "$port"; then
+' "$port" "$address"; then
         die "$purpose port $port is unavailable. Stop the existing listener or choose another port with $option. No new game was started."
     fi
 }
@@ -235,6 +238,7 @@ main() {
     local script_dir computer_dir python geometry mode=simulation mode_set=0
     local resume=0 state='' state_set=0 port='' enable_aina=0 aina_token_file=''
     local gui_port=8765 aina_port=8766 engine='' full_home=0 dry_run=0
+    local enable_pocketmage=0 pocketmage_bind=0.0.0.0 pocketmage_port=8767 pocketmage_url
     local selected_port checkpoint_kind stamp suffix status
     local -a host_args=()
 
@@ -267,6 +271,14 @@ main() {
             --aina-port)
                 require_value "$1" "${2-}"
                 aina_port=$2; shift 2 ;;
+            --enable-pocketmage)
+                enable_pocketmage=1; shift ;;
+            --pocketmage-bind)
+                require_value "$1" "${2-}"
+                pocketmage_bind=$2; shift 2 ;;
+            --pocketmage-port)
+                require_value "$1" "${2-}"
+                pocketmage_port=$2; shift 2 ;;
             --engine)
                 require_value "$1" "${2-}"
                 engine=$2; shift 2 ;;
@@ -288,15 +300,22 @@ main() {
     [[ -z $aina_token_file || $enable_aina == 1 ]] || die '--aina-token-file requires --enable-aina.'
     validate_port_number --gui-port "$gui_port"
     validate_port_number --aina-port "$aina_port"
+    validate_port_number --pocketmage-port "$pocketmage_port"
     gui_port=$((10#$gui_port))
     aina_port=$((10#$aina_port))
+    pocketmage_port=$((10#$pocketmage_port))
     (( enable_aina == 0 )) || [[ $gui_port != "$aina_port" ]] || die '--gui-port and --aina-port must differ.'
+    if (( enable_pocketmage == 1 )); then
+        [[ $pocketmage_port != "$gui_port" ]] || die '--pocketmage-port and --gui-port must differ.'
+        (( enable_aina == 0 )) || [[ $pocketmage_port != "$aina_port" ]] || die '--pocketmage-port and --aina-port must differ.'
+    fi
 
     script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
     computer_dir=$script_dir/computer
     [[ -d $computer_dir ]] || die "Cannot find computer/ beside $script_dir."
     python=$computer_dir/.venv/bin/python
     [[ -x $python ]] || die "Python environment missing at $python. Create computer/.venv and install computer/requirements.txt."
+    "$python" -c 'import ipaddress, sys; ipaddress.IPv4Address(sys.argv[1])' "$pocketmage_bind" 2>/dev/null || die '--pocketmage-bind must be a literal IPv4 address.'
 
     if [[ -z $state ]]; then
         checkpoint_kind=sim
@@ -327,6 +346,9 @@ main() {
     assert_loopback_port_available "$python" "$gui_port" GUI --gui-port
     if (( enable_aina == 1 )); then
         assert_loopback_port_available "$python" "$aina_port" 'Aina API' --aina-port
+    fi
+    if (( enable_pocketmage == 1 )); then
+        assert_loopback_port_available "$python" "$pocketmage_port" 'PocketMage API' --pocketmage-port "$pocketmage_bind"
     fi
 
     host_args=(-m chess_table_host.gui)
@@ -372,6 +394,9 @@ main() {
     if (( enable_aina == 1 )); then
         host_args+=(--remote-token-file "$aina_token_file" --remote-http-port "$aina_port")
     fi
+    if (( enable_pocketmage == 1 )); then
+        host_args+=(--enable-pocketmage --pocketmage-bind "$pocketmage_bind" --pocketmage-port "$pocketmage_port")
+    fi
 
     printf 'Checkpoint: %s\n' "$state"
     printf 'Mode: %s\n' "$mode"
@@ -389,6 +414,13 @@ main() {
         else
             printf 'Uno port: %s; keep the power cutoff reachable.\n' "$port"
         fi
+    fi
+    if (( enable_pocketmage == 1 )); then
+        pocketmage_url=$pocketmage_bind
+        if [[ $pocketmage_url == 0.0.0.0 ]]; then
+            pocketmage_url=$("$python" -c 'import socket; s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 9)); print(s.getsockname()[0]); s.close()') || pocketmage_url='<host-LAN-IP>'
+        fi
+        printf 'PocketMage API: http://%s:%s (trusted LAN, no token)\n' "$pocketmage_url" "$pocketmage_port"
     fi
     if (( dry_run == 1 )); then
         printf 'Dry run: host was not started.\n'

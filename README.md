@@ -37,6 +37,7 @@ game play remains stopped until started through the GUI or Aina.
 | [Quick start](docs/QUICK_START.md) | Setup, launch, game commands, and recovery. |
 | [GUI runbook](docs/GUI_GAME.md) | Local play, inspection, and board reset. |
 | [Aina integration](docs/REMOTE_AINA.md) | Credentials, API contract, and troubleshooting. |
+| [PocketMage roadmap](docs/POCKETMAGE_ROADMAP.md) / [control guide](docs/POCKETMAGE_CONTROL.md) | Standalone chess app, trusted-LAN API and device-agent contract. |
 | [Host](computer/README.md) / [firmware](firmware/README.md) | Development entry points and tests. |
 | [Architecture](docs/ARCHITECTURE.md) / [protocol](docs/PROTOCOL.md) | Ownership and wire contract. |
 | [Routing](docs/ROUTING.md) | Geometry and clearance limits. |

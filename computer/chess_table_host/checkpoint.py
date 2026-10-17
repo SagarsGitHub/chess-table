@@ -443,10 +443,12 @@ class GameState:
     def _validate_remote_session(self, board: chess.Board) -> None:
         """Tie remote command fences to replayed history before motion resumes."""
         if (not isinstance(self.remote_mode, str) or
-                self.remote_mode not in {"external", "human_engine"} or
+                self.remote_mode not in {"external", "human_engine", "engine_engine"} or
                 not isinstance(self.remote_human, str) or
                 self.remote_human not in {"white", "black"}):
             raise GameStateError("invalid remote game mode or human color")
+        if self.remote_mode == "engine_engine" and self.source_kind != "pocketmage":
+            raise GameStateError("engine_engine requires a PocketMage session")
         if not isinstance(self.remote_resolutions, dict):
             raise GameStateError("invalid remote move resolution index")
         if not isinstance(self.remote_receipts, dict):
@@ -455,7 +457,8 @@ class GameState:
             if (self.source_game_id is not None or self.remote_start_request_id is not None or
                     self.remote_receipts or self.remote_resolutions):
                 raise GameStateError("unbound game has remote session data")
-        elif (self.source_kind != "aina" or not isinstance(self.source_game_id, str) or
+        elif (not isinstance(self.source_kind, str) or self.source_kind not in {"aina", "pocketmage"} or
+              not isinstance(self.source_game_id, str) or
               not self.source_game_id or len(self.source_game_id) > 256 or
               not isinstance(self.remote_start_request_id, str) or
               not self.remote_start_request_id or len(self.remote_start_request_id) > 128):

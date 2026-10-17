@@ -20,7 +20,7 @@ class RemoteSession:
         if state.host_game_id != request.host_game_id:
             raise ApiError("host game identity has changed")
         if state.source_kind is not None:
-            if (state.source_kind != "aina" or state.source_game_id != request.source_game_id or
+            if (state.source_kind != request.source_kind or state.source_game_id != request.source_game_id or
                     state.remote_mode != request.mode or state.remote_human != request.human):
                 raise ApiError("checkpoint is bound to another source game")
             return False
@@ -29,7 +29,7 @@ class RemoteSession:
             raise ApiError("bind a remote source only to a fresh standard game")
         if busy:
             raise ApiError("another game worker is already running")
-        state.source_kind = "aina"
+        state.source_kind = request.source_kind
         state.source_game_id = request.source_game_id
         state.remote_mode = request.mode
         state.remote_human = request.human
@@ -38,14 +38,14 @@ class RemoteSession:
 
     @staticmethod
     def resolve(
-        state: GameState, request: ResolveMoveRequest, *, can_move: bool,
+        state: GameState, request: ResolveMoveRequest, *, can_move: bool, source_kind: str = "aina",
     ) -> tuple[RemoteMoveResolution, bool]:
         saved = state.remote_resolutions.get(request.request_id)
         if saved is not None:
             if saved.expression != request.expression:
                 raise ApiError("request_id was already used for another expression")
             return saved, False
-        if not can_move or state.source_kind != "aina":
+        if not can_move or state.source_kind != source_kind:
             raise ApiError("remote game is not waiting for your move")
         try:
             uci = resolve_move(state.board(), request.expression)

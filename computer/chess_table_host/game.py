@@ -75,7 +75,7 @@ class GameRunner(GamePreflightMixin, GameRecoveryMixin):
     ) -> MovePlan:
         plan = self.preflight_move(uci, geometry)
         if remote_receipt is not None:
-            if (self.state.source_kind != "aina" or
+            if (self.state.source_kind not in {"aina", "pocketmage"} or
                     self.state.source_game_id != remote_receipt.source_game_id or
                     self.state.host_game_id != remote_receipt.host_game_id or
                     len(self.state.moves) != remote_receipt.expected_ply or

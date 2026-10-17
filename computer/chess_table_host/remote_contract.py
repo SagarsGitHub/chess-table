@@ -37,20 +37,25 @@ class SessionStartRequest:
     source_game_id: str
     mode: str = "external"
     human: str = "white"
+    source_kind: str = "aina"
 
     @classmethod
-    def from_body(cls, value: object) -> "SessionStartRequest":
+    def from_body(cls, value: object, *, source_kind: str = "aina") -> "SessionStartRequest":
         body = _body(value, {"host_game_id", "request_id", "source_kind",
                              "source_game_id", "mode", "human"})
         mode, human = body.get("mode", "external"), body.get("human", "white")
-        if (not isinstance(mode, str) or mode not in {"external", "human_engine"} or
+        modes = {"external", "human_engine"}
+        if source_kind == "pocketmage":
+            modes.add("engine_engine")
+        if (not isinstance(mode, str) or mode not in modes or
                 not isinstance(human, str) or human not in {"white", "black"}):
             raise ApiError("invalid game mode or human color", HTTPStatus.BAD_REQUEST)
-        if body.get("source_kind") != "aina":
-            raise ApiError("source_kind must be aina", HTTPStatus.BAD_REQUEST)
+        if source_kind not in {"aina", "pocketmage"} or body.get("source_kind") != source_kind:
+            raise ApiError(f"source_kind must be {source_kind}", HTTPStatus.BAD_REQUEST)
         return cls(request_identifier(body.get("host_game_id"), "host_game_id"),
                    request_identifier(body.get("request_id"), "request_id"),
-                   bounded_text(body.get("source_game_id"), "source_game_id"), mode, human)
+                   bounded_text(body.get("source_game_id"), "source_game_id"), mode, human,
+                   source_kind)
 
 
 @dataclass(frozen=True)

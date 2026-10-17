@@ -80,6 +80,16 @@ promotion or electrical reliability.
 | 3. Completed Chess.com replay | Read-only PubAPI; validated standard-chess PGN bound to source game ID, move prefix, and result. Require simulated replay/restart without duplicate moves and preservation of the source result, then an attended physical replay after loaded-motion trials. |
 | 4. Live Chess.com games | Obtain official connected-board/OAuth access; define turn, clock, position, submission, and manual fallback for unroutable moves. Use an engine-free online human mode. Acceptance covers provider versus physical completion, network loss, stale/duplicate events, clock delay, and recovery; no Stockfish or suggestions in ongoing human games. |
 
+## PocketMage chess control
+
+The standalone PocketMage app and opt-in trusted-LAN listener support board/legal-move
+display, fenced manual moves, human versus Stockfish with either color, and
+Stockfish self-play. The host owns rules, routes, inventory and durable receipts;
+Aina remains authenticated on loopback with the same single execution owner.
+See the [control guide](POCKETMAGE_CONTROL.md) and [delivery status](POCKETMAGE_ROADMAP.md).
+Device flashing and attended PocketMage physical acceptance remain pending.
+Local host controls handle reset and inspected recovery.
+
 ## Aina status
 
 **Maintenance:** typed request/session
