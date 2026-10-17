@@ -21,6 +21,7 @@ from .routing import RouteError, RouteGeometry
 from .serial_link import LinkError
 from .host_runtime import _archive_checkpoint, _feasible_engine_moves, _resolve_engine_path
 from .gui_remote import RemoteMoveTicket
+from .reset_receipt import settle_reset_receipts
 
 
 class GameWorkerMixin:
@@ -91,6 +92,15 @@ class GameWorkerMixin:
                         self._status = "Could not save the stopped move; inspect the checkpoint."
                         self._activity = "error"
             with self._guard:
+                if not (completed and task == self._game_loop and self._reset_requested.is_set()):
+                    try:
+                        saved = self._load_checkpoint()
+                        if settle_reset_receipts(saved):
+                            self.store.save(saved)
+                            self.runner.state = saved
+                    except (OSError, ValueError) as exc:
+                        self._error = str(exc)
+                        self._status = "Could not save the stopped reset; inspect the checkpoint."
                 if self._remote_ticket is not None and not self._remote_ticket.ready.is_set():
                     self._remote_ticket.error = ApiError("worker ended before move preparation")
                     self._remote_ticket.ready.set()

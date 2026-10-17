@@ -8,6 +8,7 @@ from uuid import UUID
 
 from .api_errors import ApiError
 from .checkpoint import RemoteMoveReceipt
+from .reset_receipt import RemoteResetReceipt
 
 
 def request_identifier(value: object, label: str) -> str:
@@ -73,6 +74,32 @@ class SessionResetRequest:
         if not valid:
             raise ApiError("host_game_id must be a canonical UUID", HTTPStatus.BAD_REQUEST)
         return cls(identifier)
+
+
+@dataclass(frozen=True)
+class PocketMageResetRequest:
+    request_id: str
+    host_game_id: str
+    source_game_id: str
+    expected_ply: int
+    expected_fen: str
+    confirmed: bool
+
+    @classmethod
+    def from_body(cls, value: object) -> "PocketMageResetRequest":
+        body = _body(value, set(cls.__dataclass_fields__))
+        if body.get("confirmed") is not True:
+            raise ApiError("confirm automatic physical board reset first", HTTPStatus.BAD_REQUEST)
+        ply = body.get("expected_ply")
+        if type(ply) is not int or ply < 0:
+            raise ApiError("expected_ply must be a nonnegative integer", HTTPStatus.BAD_REQUEST)
+        host = SessionResetRequest.from_body({"host_game_id": body.get("host_game_id")}).host_game_id
+        return cls(request_identifier(body.get("request_id"), "request_id"), host,
+                   bounded_text(body.get("source_game_id"), "source_game_id"), ply,
+                   bounded_text(body.get("expected_fen"), "expected_fen"), True)
+
+    def receipt(self) -> RemoteResetReceipt:
+        return RemoteResetReceipt(**vars(self))
 
 
 @dataclass(frozen=True)

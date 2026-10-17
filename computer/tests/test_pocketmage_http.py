@@ -55,7 +55,7 @@ class PocketMageHTTPTests(unittest.TestCase):
                     self.assertEqual(set(status["legal_moves"]),
                                      {move.uci() for move in chess.Board().legal_moves})
                     self.assertEqual(request(base, "/v1/status", origin=base)[0], 403)
-                    for route in ("/api/state", "/v1/reconcile", "/v1/session/reset",
+                    for route in ("/api/state", "/v1/reconcile",
                                   "/v1/moves/resolve", "/v1/raw"):
                         self.assertEqual(request(base, route, {}, token=None)[0], 404)
                     self.assertEqual(request(base, "/v1/session/start", start_body(status))[0], 400)

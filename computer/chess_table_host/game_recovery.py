@@ -11,6 +11,7 @@ import chess
 from .checkpoint import GameState, PendingMove, PendingReset
 from .game_errors import GameStateError
 from .physical import _apply_action, _board_pieces, _replay_physical
+from .reset_receipt import RESET_TERMINAL
 
 
 class GameRecoveryMixin:
@@ -65,7 +66,16 @@ class GameRecoveryMixin:
                 any(self.state.physical_parking)):
             raise GameStateError("reset cannot finish before every piece is home")
         ply_count = len(self.state.moves)
+        # A request can be registered while the game worker is waiting for a
+        # human, before it makes another save. Read the latest intent metadata
+        # without changing the worker's authoritative physical snapshot.
+        receipts = self.store.load().remote_reset_receipts
         self.state = GameState.new()
+        self.state.remote_reset_receipts = receipts
+        for receipt in receipts.values():
+            if receipt.state not in RESET_TERMINAL:
+                receipt.state = "committed"
+                receipt.resulting_host_game_id = self.state.host_game_id
         self.state.events.append({"event": "board_reset_completed", "previous_plies": ply_count})
         self.store.save(self.state)
 

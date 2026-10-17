@@ -104,6 +104,9 @@ class GameRunner(GamePreflightMixin, GameRecoveryMixin):
             self._finish_reset()
             return ()
         self.state.reset = PendingReset(actions)
+        for receipt in self.state.remote_reset_receipts.values():
+            if receipt.state == "prepared":
+                receipt.state = "in_flight"
         self.state.events.append({
             "event": "reset_prepared",
             "transfers": sum(isinstance(action, Transfer) for action in actions),

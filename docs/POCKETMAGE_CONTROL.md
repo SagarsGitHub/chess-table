@@ -35,12 +35,14 @@ Unknown fields and invalid types are refused. Responses use schema version 1.
 | --- | --- |
 | `GET /v1/status` | Committed board, legal moves, ownership, readiness and activity. |
 | `POST /v1/session/start` | Bind a fresh session or explicitly resume a matching one. |
+| `POST /v1/session/reset` | Confirm and request an automatic physical return to standard setup. |
+| `GET /v1/resets/{request_id}` | Poll the durable physical reset outcome. |
 | `POST /v1/moves` | Submit a fenced legal UCI move. |
 | `GET /v1/moves/{request_id}` | Poll a durable receipt belonging to this source. |
 | `POST /v1/stop` | Body `{}`; shared controller STOP. |
 
-PocketMage reset, expression resolution and reconciliation are not exposed.
-Use local host controls to reset/setup another game or reconcile uncertainty.
+Expression resolution and reconciliation are not exposed. Use local host
+controls to inspect/reconcile uncertainty or continue an interrupted reset.
 Starting a session does not reset pieces. Reconnection does not resume motion.
 
 Status fields: `schema_version`, `host_game_id`, `source_kind`, `source_game_id`,
@@ -79,7 +81,58 @@ modes. Human Black and self-play can permit an immediate engine opening.
 202 means accepted, not motion complete. Matching retries neither start another
 worker nor clear a game. Competing source/session ownership is refused. Source
 IDs coordinate ownership rather than authenticate the device. After a restart,
-load saved identity and choose explicit Resume. A new game needs local reset.
+load saved identity and choose explicit Resume. A new game needs a completed
+physical reset, requested explicitly from the app or local host controls.
+
+## Automatic physical reset
+
+The app's `reset board` command opens a confirmation before sending anything.
+It returns all pieces, including captured pieces in parking, through the
+existing inventory and route planner. The shared worker finishes an active
+chess move before beginning the return plan. This is a graceful game-ending
+request; use STOP to interrupt motion. Reset works only for a standard-start
+game bound to the same PocketMage session, with no unresolved device move.
+An idle board with uncertain saved work requires local inspection first.
+
+Freeze and persist this complete intent before submission:
+
+```json
+{
+  "request_id": "reset-<unique-request-id>",
+  "host_game_id": "<current UUID>",
+  "source_game_id": "<saved PocketMage session ID>",
+  "expected_ply": 12,
+  "expected_fen": "<latest committed FEN>",
+  "confirmed": true
+}
+```
+
+The receipt echoes every field and adds `schema_version: 1`, `state`,
+`resulting_host_game_id`, `phase`, `action_number`, and `total_actions`.
+States are `prepared`, `in_flight`, `committed`, `aborted`, and
+`reconciliation_required`. `phase` also distinguishes `finishing_move` from
+`resetting`; action counts describe the currently saved chess/reset action.
+`resulting_host_game_id` is null until a committed reset creates a fresh
+unbound standard-start game. POST returns 202 while active, or 200 for an
+already terminal outcome; receipt GET returns 200, or 404 if never registered.
+
+The checkpoint retains reset receipts across that new game identity and host
+restarts. Exact duplicate POSTs only observe their saved outcome; altered
+payloads with a reused ID are refused. Neither retries, reconnection nor reboot
+resume an interrupted reset. At a known completed action boundary, an
+interrupted request becomes `aborted`; any uncertain carry becomes
+`reconciliation_required`. Inspect the table and use local recovery controls
+before continuing. The app polls the same receipt after a timeout and never
+automatically replays a reset. Historical checkpoint versions migrate without
+changing their physical inventory or pending actions.
+
+A wellformed new reset refused before durable registration returns 409 with
+`error.code: "reset_not_accepted"` and `error.request` echoing all six frozen
+request fields. Only that exact echoed refusal lets the app discard its unsent
+intent and refresh stale FEN/ply before a new explicit request. Reused-ID
+conflicts and any failure after registration never use this code: retain those
+intents and inspect their receipts. This distinction also covers a Stockfish
+move committing between the app's status poll and reset submission.
 
 ## Moves and receipts
 

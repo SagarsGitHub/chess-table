@@ -17,7 +17,7 @@ from typing import Any, TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
 
 from .game import GameStateError
-from .api_errors import ApiError
+from .api_errors import ApiError, ResetNotAccepted
 from .planner import PlanError
 from .routing import RouteError
 from .serial_link import LinkError
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 MAX_BODY_BYTES = 8192
 REMOTE_POST_PATHS = frozenset({"/v1/session/start", "/v1/session/reset", "/v1/moves",
                                "/v1/moves/resolve", "/v1/stop"})
-POCKETMAGE_POST_PATHS = frozenset({"/v1/session/start", "/v1/moves", "/v1/stop"})
+POCKETMAGE_POST_PATHS = frozenset({"/v1/session/start", "/v1/session/reset", "/v1/moves", "/v1/stop"})
 
 
 def read_remote_token(path: Path) -> str:
@@ -65,7 +65,8 @@ class PocketMageHTTPServer(ThreadingHTTPServer):
     """Explicitly enabled, unauthenticated IPv4 LAN control for PocketMage.
 
     This exposes chess intents and STOP only. It never owns a separate runner,
-    serial connection, reset/reconciliation flow, or engine process.
+    serial connection, reconciliation flow, or engine process. Physical reset
+    intents use the existing controller's single checkpointed worker.
     """
 
     daemon_threads = True
@@ -172,6 +173,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
         return value
 
     def _handle_error(self, exc: Exception) -> None:
+        if isinstance(exc, ResetNotAccepted):
+            self._send_json({"error": {"code": "reset_not_accepted", "message": str(exc),
+                                       "request": exc.request}}, exc.status)
+            return
         if isinstance(exc, ApiError):
             status = exc.status
         elif isinstance(exc, OSError):
@@ -202,6 +207,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
         try:
             if path == "/v1/status":
                 self._send_json(self.server.controller.remote_status())
+            elif (self.server.source_kind == "pocketmage" and
+                  path.startswith("/v1/resets/") and path.count("/") == 3):
+                request_id = unquote(path.removeprefix("/v1/resets/"))
+                self._send_json(self.server.controller.pocketmage_reset_receipt(request_id))
             elif path.startswith("/v1/moves/") and path.count("/") == 3:
                 request_id = unquote(path.removeprefix("/v1/moves/"))
                 self._send_json(self.server.controller.remote_receipt(
@@ -225,7 +234,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 self._send_json(controller.remote_start(
                     body, source_kind=self.server.source_kind), HTTPStatus.ACCEPTED)
             elif path == "/v1/session/reset":
-                self._send_json(controller.remote_reset(body), HTTPStatus.ACCEPTED)
+                if self.server.source_kind == "pocketmage":
+                    receipt = controller.pocketmage_reset(body)
+                    status = HTTPStatus.OK if receipt["state"] in {
+                        "committed", "aborted", "reconciliation_required",
+                    } else HTTPStatus.ACCEPTED
+                    self._send_json(receipt, status)
+                else:
+                    self._send_json(controller.remote_reset(body), HTTPStatus.ACCEPTED)
             elif path == "/v1/moves/resolve":
                 self._send_json(controller.remote_resolve_move(body))
             elif path == "/v1/moves":

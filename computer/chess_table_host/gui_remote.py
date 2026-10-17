@@ -9,16 +9,18 @@ from dataclasses import dataclass, field
 from http import HTTPStatus
 import threading
 from typing import Any
-from .api_errors import ApiError
+import chess
+from .api_errors import ApiError, ResetNotAccepted
 from .gui_snapshot import _active_action
 from .game import GameState, GameStateError
 from .checkpoint import RemoteMoveReceipt
 from .remote_contract import (
-    MoveRequest, ResolveMoveRequest, SessionResetRequest, SessionStartRequest,
+    MoveRequest, PocketMageResetRequest, ResolveMoveRequest, SessionResetRequest, SessionStartRequest,
     request_identifier,
 )
 from .remote_session import RemoteSession
 from .host_runtime import _resolve_engine_path
+from .reset_receipt import RESET_TERMINAL, RemoteResetReceipt, settle_reset_receipts
 
 
 @dataclass
@@ -121,6 +123,10 @@ class RemoteControlMixin:
                                HTTPStatus.SERVICE_UNAVAILABLE) from exc
         with self._guard:
             state = self._load_checkpoint()
+            if source_kind == "pocketmage" and state.reset is not None:
+                raise ApiError("inspect and continue the saved board reset using local host controls")
+            if any(receipt.state not in RESET_TERMINAL for receipt in state.remote_reset_receipts.values()):
+                raise ApiError("a physical board reset is already requested")
             if RemoteSession.bind(state, request, busy=self._worker is not None):
                 self.store.save(state)
                 self.runner.state = state
@@ -148,6 +154,76 @@ class RemoteControlMixin:
             if self._worker is None or self._mode is not None:
                 self.end_game_and_reset()
             return self.remote_status()
+
+    @staticmethod
+    def _reset_receipt_view(receipt: RemoteResetReceipt, state: GameState, busy: bool) -> dict[str, Any]:
+        active = _active_action(state) if receipt.host_game_id == state.host_game_id else None
+        phase = receipt.state
+        if receipt.state not in RESET_TERMINAL:
+            if active is not None and active["phase"] != "ready" and not busy:
+                phase = "reconciliation_required"
+            elif active is not None:
+                phase = "resetting" if active["kind"] == "reset" else "finishing_move"
+        return {
+            "schema_version": 1, **receipt.to_json(), "phase": phase,
+            "action_number": active["action_number"] if active else 0,
+            "total_actions": active["total_actions"] if active else 0,
+        }
+
+    def pocketmage_reset_receipt(self, request_id: str) -> dict[str, Any]:
+        request_id = request_identifier(request_id, "request_id")
+        with self._guard:
+            state = self._load_checkpoint()
+            receipt = state.remote_reset_receipts.get(request_id)
+            if receipt is None:
+                raise ApiError("reset request was never prepared", HTTPStatus.NOT_FOUND)
+            return self._reset_receipt_view(receipt, state, self._worker is not None)
+
+    def pocketmage_reset(self, body: dict[str, Any]) -> dict[str, Any]:
+        request = PocketMageResetRequest.from_body(body)
+        receipt = request.receipt()
+        with self._guard:
+            state = self._load_checkpoint()
+            existing = state.remote_reset_receipts.get(request.request_id)
+            if existing is not None:
+                if not existing.same_intent(receipt):
+                    raise ApiError("request_id was already used for another reset")
+                # A duplicate observes exactly the saved outcome. In particular,
+                # it cannot resume a STOPped or rebooted physical reset.
+                return self._reset_receipt_view(existing, state, self._worker is not None)
+
+            def validate(current: GameState) -> None:
+                def reject(reason: str) -> None:
+                    raise ResetNotAccepted(reason, dict(vars(request)))
+
+                if (current.source_kind != "pocketmage" or
+                        current.source_game_id != request.source_game_id):
+                    reject("checkpoint is not bound to this PocketMage session")
+                if (current.host_game_id != request.host_game_id or
+                        len(current.moves) != request.expected_ply or
+                        current.board_fen != request.expected_fen):
+                    reject("reset position fence does not match the current game")
+                if any(item.state not in RESET_TERMINAL for item in current.remote_reset_receipts.values()):
+                    reject("another physical reset is already requested")
+                active = current.reset or current.pending
+                if active is not None and self._worker is None:
+                    reject("inspect and continue the saved action using local host controls")
+                if self._stop.is_set() and self._worker is not None:
+                    reject("wait for the STOPped worker to settle")
+                if current.reset is not None or (self._worker is not None and self._mode is None):
+                    reject("board reset is already running")
+                if current.initial_fen != chess.Board().fen():
+                    reject("board reset requires a standard-start game")
+
+            self.store.register_reset_receipt(receipt, validate)
+            try:
+                self.end_game_and_reset()
+            except BaseException:
+                saved = self._load_checkpoint()
+                if settle_reset_receipts(saved):
+                    self.store.save(saved)
+                raise
+            return self.pocketmage_reset_receipt(request.request_id)
 
     def remote_resolve_move(self, body: dict[str, Any]) -> dict[str, Any]:
         """Persist legal interpretation under the same guard as move submission."""
