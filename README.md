@@ -4,6 +4,16 @@ Automated chessboard with a Python host, Arduino Uno motor controller, and 32 pe
 
 **The board has no piece sensors.** Inspect and reconcile uncertain motion before continuing. Preserve checkpoints and serial logs in `computer/runs/`.
 
+## Photos and demos
+
+| Board and pieces | Board with display |
+| --- | --- |
+| ![Chess table and pieces](docs/media/IMG_4640.JPG) | ![Chess table with its display](docs/media/IMG_4641.JPG) |
+| **Desktop GUI setup** | **Motors and controller wiring** |
+| ![Chess table beside its browser GUI](docs/media/IMG_4642.JPG) | ![Chess table motors and controller wiring](docs/media/IMG_4643.JPG) |
+
+Videos: [PocketMage control demo](docs/media/pocketmage-chess.mp4) · [Automatic play demo](docs/media/pocketmage-chess-auto.mp4).
+
 ## Run
 
 Complete the [one-time setup](docs/QUICK_START.md#once-per-machine), then run from the repository root:
