@@ -35,6 +35,7 @@ Open `http://localhost:8765/`, choose a mode, and start the game. Launching the 
 - [Host development](computer/README.md) and [Uno firmware](firmware/README.md)
 - [Architecture](docs/ARCHITECTURE.md), [routing](docs/ROUTING.md), and [serial protocol](docs/PROTOCOL.md)
 - [Aina setup and API](docs/REMOTE_AINA.md)
+- [PocketMage control and LAN API](docs/POCKETMAGE_CONTROL.md)
 - [Accepted work and remaining tests](docs/ROADMAP.md)
 
 The original `chess_automated` application remains in Git history. Its [MIT notice](LICENSES/chess_automated.txt) credits WouterSchols; the current host and imported firmware are maintained separately.

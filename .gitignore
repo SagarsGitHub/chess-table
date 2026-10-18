@@ -221,3 +221,11 @@ cython_debug/
 **/node_modules/
 /computer/runs/
 *.session.lock
+
+# Private contributor guidance, fabrication sources, and local artifacts.
+/AGENTS.md
+/fabrication/
+/output/
+/private/
+/firmware/.vscode/
+/computer/--enable-aina*

@@ -1,6 +1,6 @@
 # Chess table quick start
 
-The host runs on native Linux or Ubuntu WSL 2; PowerShell wraps WSL. On this machine, use `C:\Users\sagar\Documents\Coding\chess-table`; elsewhere, use the local repository root.
+The host runs on native Linux or Ubuntu WSL 2; PowerShell wraps WSL. Run the launchers from your local repository root.
 
 ## Once per machine
 
@@ -94,7 +94,7 @@ Mark the inspection checkbox only after checking the actual pieces. Resolve unce
 
 **End game & reset board** requests an orderly midgame reset: finish the current chess move, including every capture transfer, archive its checkpoint, then return pieces. With no pending move, the control reads **Reset board for new game**. Reset preflights the full plan and saves each action; a fresh standard-position game begins only after all 32 pieces are home and parking is empty. After an interrupted reset, inspect/reconcile its action and choose **Continue board reset**.
 
-Preserve `computer/runs/` checkpoints, `.before-reset-<UTC timestamp>.json` archives, adjacent `.serial.jsonl` transcripts, live geometry, and notes about stops, contact, slip, and delivery. See [routing limits](ROUTING.md) and [accepted/pending physical work](ROADMAP.md), including the unresolved old 155-ply checkpoint.
+Preserve `computer/runs/` checkpoints, `.before-reset-<UTC timestamp>.json` archives, adjacent `.serial.jsonl` transcripts, live geometry, and notes about stops, contact, slip, and delivery. Keep machine-specific run evidence in your private project notes. See [routing limits](ROUTING.md) and [accepted/pending physical work](ROADMAP.md).
 
 ## Optional CLI smoke test
 
