@@ -68,9 +68,10 @@ def link_with_script(script, *, first_command_id=1):
 
 class SerialLinkTests(unittest.TestCase):
     def test_extended_hello_capabilities_fit_reply_at_largest_normal_id(self) -> None:
-        caps = "STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,CARRY_OFFSET,OFFSET,SAVE,GEOM,OVER20"
+        caps = "STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,CARRY_DIRECT,CARRY_OFFSET,OFFSET,SAVE,GEOM,OVER20"
         reply = f"@65534 DONE HELLO V=1 CAPS={caps}"
         self.assertGreater(len(reply), 96)
+        self.assertLessEqual(len(reply), MAX_REPLY_BYTES)
         link, stream = link_with_script(
             lambda _data, io: io.feed(f"@65534 ACK\r\n{reply}\r\n"),
             first_command_id=65534,

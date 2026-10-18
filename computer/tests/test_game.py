@@ -104,19 +104,33 @@ class GameRunnerTests(unittest.TestCase):
         self.assertEqual(runner.state.physical_squares["e5"], "p")
         self.assertEqual(runner.state.moves, ["e4f6"])
 
-    def test_midboard_rook_move_stages_pawn_when_clearance_is_tighter(self) -> None:
+    def test_short_rook_move_avoids_unnecessary_neighbor_staging(self) -> None:
         geometry = replace(GEOMETRY, moving_diameter_mm=23, occupied_diameter_mm=23)
         runner = self.runner_at("k7/8/8/8/3PRP2/8/8/4K3 w - - 0 1")
         plan = runner.prepare_move("e4e6", geometry)
         self.assertEqual(plan.actions, (
-            Transfer("P", BoardSquare("d4"), BoardSquare("c4"), "clearance_stage"),
-            Transfer("R", BoardSquare("e4"), BoardSquare("e6"), "clearance_move"),
-            Transfer("P", BoardSquare("c4"), BoardSquare("d4"), "clearance_restore"),
+            Transfer("R", BoardSquare("e4"), BoardSquare("e6"), "move"),
         ))
-        runner.execute_pending(FakeLink(), geometry, lambda _action: True)
+        link = FakeLink()
+        runner.execute_pending(link, geometry, lambda _action: True)
+        self.assertEqual(link.carries, [("28", "44", "979B")])
         self.assertEqual(runner.state.physical_squares["e6"], "R")
         self.assertEqual(runner.state.physical_squares["d4"], "P")
         self.assertEqual(runner.state.moves, ["e4e6"])
+
+    def test_longer_midboard_rook_move_stages_pawn_when_clearance_is_tighter(self) -> None:
+        geometry = replace(GEOMETRY, moving_diameter_mm=23, occupied_diameter_mm=23)
+        runner = self.runner_at("k7/8/8/8/3PRP2/8/8/4K3 w - - 0 1")
+        plan = runner.prepare_move("e4e7", geometry)
+        self.assertEqual(plan.actions, (
+            Transfer("P", BoardSquare("d4"), BoardSquare("c4"), "clearance_stage"),
+            Transfer("R", BoardSquare("e4"), BoardSquare("e7"), "clearance_move"),
+            Transfer("P", BoardSquare("c4"), BoardSquare("d4"), "clearance_restore"),
+        ))
+        runner.execute_pending(FakeLink(), geometry, lambda _action: True)
+        self.assertEqual(runner.state.physical_squares["e7"], "R")
+        self.assertEqual(runner.state.physical_squares["d4"], "P")
+        self.assertEqual(runner.state.moves, ["e4e7"])
 
     def prepare_capture(self) -> tuple[str, ParkingSlot]:
         self.play("e2e4")

@@ -29,11 +29,13 @@ public:
     bool mapKnown() const { return pieces_.known(); }
     bool loadMap(const uint8_t bytes[12]);
     // Validate the entire commanded route before starting any motor or magnet.
+    // Two board centers may form a complete 1-2-square rank/file/diagonal carry.
     StartError startCarry(uint8_t source, uint8_t destination,
                           const HalfSquarePoint *points, uint8_t count);
     // Pick up at a rook's known in-square corner and carry directly to a board
     // square. points[0] is still the source center for normal route validation;
-    // the first loaded leg physically starts at the corner instead.
+    // the first loaded leg physically starts at the corner instead. A grid
+    // waypoint is required; two-center direct carries are unsupported here.
     StartError startCarryOffset(uint8_t source, int8_t dx, int8_t dy,
                                 uint8_t destination,
                                 const HalfSquarePoint *points, uint8_t count);

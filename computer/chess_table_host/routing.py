@@ -370,6 +370,7 @@ def plan_transfer_route(
     occupied_parking_slots: Iterable[ParkingSlot],
     geometry: RouteGeometry | None = None,
     max_waypoints: int | None = None,
+    allow_direct_moves: bool = True,
     ignore_piece_clearance: bool = False,
     source_offset_mm: tuple[float, float] | None = None,
     offset_positions_mm: Mapping[BoardSquare, tuple[float, float]] | None = None,
@@ -378,7 +379,11 @@ def plan_transfer_route(
 
     The source must be occupied and the destination vacant. The caller must
     update its occupancy snapshot after each acknowledged transfer, especially
-    between the victim and attacker legs of a capture. Paths use short
+    between the victim and attacker legs of a capture. With ``allow_direct_moves``,
+    ordinary board-to-board carries try a direct rank, file, or 45-degree diagonal
+    of one or two squares first. The full segment and delivery extension must
+    clear standing pieces; measured direct paths retain the firmware's 18 mm
+    minimum even when ``ignore_piece_clearance`` is set. Other paths use short
     diagonal entries from square centers to adjacent grid intersections, then
     horizontal, vertical, or 45-degree grid edges. A vacant edge square adjacent to the
     parking endpoint may be used as an additional approach, so an occupied
@@ -401,6 +406,8 @@ def plan_transfer_route(
         raise TypeError("geometry must be a RouteGeometry or None")
     if type(ignore_piece_clearance) is not bool:
         raise TypeError("ignore_piece_clearance must be a bool")
+    if type(allow_direct_moves) is not bool:
+        raise TypeError("allow_direct_moves must be a bool")
     if offset_positions_mm is not None and (geometry is None or not isinstance(offset_positions_mm, Mapping)):
         raise ValueError("offset_positions_mm requires measured geometry and a mapping")
     if source_offset_mm is not None:
@@ -557,6 +564,25 @@ def plan_transfer_route(
             _distance_squared_to_segment(center, start, end) >= threshold - 1e-9
             for center, threshold in zip(obstacle_positions, obstacle_required_squared)
         )
+
+    # Only the whole ordinary carry may bypass the grid. Offset pickups keep
+    # their grid approach so the final release vector matches the firmware.
+    dx = abs(destination_point.x - source_point.x)
+    dy = abs(destination_point.y - source_point.y)
+    if (allow_direct_moves and source_offset_mm is None
+            and isinstance(source, BoardSquare) and isinstance(destination, BoardSquare)
+            and 0 < max(dx, dy) <= 4 and (dx == 0 or dy == 0 or dx == dy)
+            and clear(source_point, destination_point)):
+        minimum_squared = required_offset_clearance_mm(geometry) ** 2 if geometry else None
+        start, end = metric(source_point), metric(destination_point)
+        if minimum_squared is None or all(
+            _distance_squared_to_segment(center, start, end) >= minimum_squared
+            for center in (*nominal_obstacle_positions, *obstacle_positions)
+        ):
+            return CarryRoute(
+                transfer, (source_point, destination_point),
+                geometry_applied=geometry is not None,
+            )
 
     # Board centers attach to four diagonal grid points; parking is itself a
     # grid point. A diagonal grid edge crosses the intervening square center,

@@ -127,7 +127,7 @@ def connect_physical(
         hello = link.hello()
         required = {
             "STATUS", "HOME", "REF", "MAP", "CARRY", "CARRY_OFFSET",
-            "CARRY_DIAG", "GEOM", "OFFSET", "OVER20",
+            "CARRY_DIAG", "CARRY_DIRECT", "GEOM", "OFFSET", "OVER20",
         }
         if not required.issubset(hello.capabilities):
             raise GameStateError(f"controller lacks {sorted(required - hello.capabilities)}")

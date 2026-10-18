@@ -31,6 +31,13 @@ transition, magnet event, and commanded pulse position.
 | `--small-table` | Measured table too short for the configured board cannot enable carry |
 | `--corrupt` / `--interrupted-save` / `--config-change` | Damaged, unfinished, or incompatible EEPROM records cannot authorize REF |
 
+The default mode also checks the `CARRY_DIRECT` capability and two-waypoint
+one- and two-square rank, file, and 45-degree diagonal carries against actual
+compiled motor/relay behavior. It rejects occupied intermediate centers,
+nearby parking pieces, blocked release extensions, long and knight-shaped
+direct moves, embedded center links, and two-center `CARRY_OFFSET` requests
+before any travel or magnet activation.
+
 The simulator confirms commanded positions and motion safety decisions. It
 cannot establish physical magnetic coupling, piece clearance, backlash, missed
 steps, supply integrity, or the reported magnet-release reset. Those require

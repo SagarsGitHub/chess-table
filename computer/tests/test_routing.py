@@ -113,7 +113,7 @@ class RoutingTests(unittest.TestCase):
                 geometry=self._geometry(18, 18), max_waypoints=12,
             )
             start, end = route.points[0], route.points[-1]
-            self.assertEqual(len(route.points), 4)
+            self.assertEqual(len(route.points), 2 if source_name == "e2" else 4)
             self.assertTrue(all(
                 (point.x - start.x) * (end.y - start.y) ==
                 (point.y - start.y) * (end.x - start.x)
@@ -126,6 +126,88 @@ class RoutingTests(unittest.TestCase):
             self.assertLessEqual(len(route.points), 12)
             self.assertEqual(len(encode_carry(route)[2]), 2 * len(route.points))
             self._assert_firmware_segments(route.points, {start})
+
+    def test_one_and_two_square_moves_go_direct_in_all_eight_directions(self) -> None:
+        source = BoardSquare("d4")
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                       (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            for distance in (1, 2):
+                destination = BoardSquare(
+                    f"{chr(ord('d') + dx * distance)}{4 + dy * distance}"
+                )
+                with self.subTest(destination=destination):
+                    route = plan_transfer_route(
+                        Transfer("Q", source, destination, "move"),
+                        occupied_squares=(source,), occupied_parking_slots=(),
+                        geometry=self._geometry(18, 18), max_waypoints=2,
+                    )
+                    self.assertEqual(route.points, (self._point("d4"), self._point(destination.name)))
+                    self.assertTrue(route.geometry_applied)
+                    self._assert_firmware_segments(route.points, {route.points[0]})
+
+    def test_starting_double_pawn_move_uses_direct_path(self) -> None:
+        squares = tuple(BoardSquare(chess.square_name(square))
+                        for square in chess.Board().piece_map())
+        route = plan_transfer_route(
+            Transfer("P", BoardSquare("e2"), BoardSquare("e4"), "move"),
+            occupied_squares=squares, occupied_parking_slots=(),
+            geometry=self._geometry(18, 18), max_waypoints=2,
+        )
+        self.assertEqual(route.wire_points, ((9, 3), (9, 7)))
+        self.assertEqual(encode_carry(route), ("12", "28", "9397"))
+
+    def test_direct_paths_can_be_disabled_and_exclude_long_and_knight_moves(self) -> None:
+        source = BoardSquare("d4")
+        for name, enabled in (("f4", False), ("g4", True), ("f5", True)):
+            with self.subTest(destination=name, enabled=enabled):
+                route = plan_transfer_route(
+                    Transfer("Q", source, BoardSquare(name), "move"),
+                    occupied_squares=(source,), occupied_parking_slots=(),
+                    geometry=self._geometry(18, 18), allow_direct_moves=enabled,
+                )
+                self.assertGreater(len(route.points), 2)
+
+    def test_blocked_two_square_direct_path_falls_back_to_grid(self) -> None:
+        source, destination, blocker = map(BoardSquare, ("d4", "f4", "e4"))
+        route = plan_transfer_route(
+            Transfer("Q", source, destination, "move"),
+            occupied_squares=(source, blocker), occupied_parking_slots=(),
+            geometry=self._geometry(18, 18), max_waypoints=12,
+        )
+        self.assertGreater(len(route.points), 2)
+        self._assert_firmware_segments(route.points, {self._point("d4"), self._point("e4")})
+
+    def test_direct_path_retains_firmware_clearance_with_small_piece_override(self) -> None:
+        # At 24 mm pitch, a diagonal passes 24/sqrt(2) mm from e4. That
+        # clears the configured 12 mm pieces, but not firmware's 18 mm.
+        source, destination, blocker = map(BoardSquare, ("d4", "f6", "e4"))
+        route = plan_transfer_route(
+            Transfer("B", source, destination, "move"),
+            occupied_squares=(source, blocker), occupied_parking_slots=(),
+            geometry=self._geometry(12, 12, square_pitch_mm=24),
+            ignore_piece_clearance=True, max_waypoints=12,
+        )
+        self.assertGreater(len(route.points), 2)
+
+    def test_direct_path_checks_displaced_neighbors_and_release_extension(self) -> None:
+        source, destination, blocker = map(BoardSquare, ("d4", "f4", "e3"))
+        geometry = self._geometry(24, 24)
+        center = geometry.physical_point_mm(self._point("e3"))
+        route = plan_transfer_route(
+            Transfer("R", source, destination, "move"),
+            occupied_squares=(source, blocker), occupied_parking_slots=(),
+            geometry=geometry, offset_positions_mm={blocker: (center[0], center[1] + 9.375)},
+        )
+        self.assertGreater(len(route.points), 2)
+        # g4 clears the center path by a full pitch, but 26 mm footprints
+        # cannot clear the extra 6.25 mm loaded stroke beyond f4.
+        blocker = BoardSquare("g4")
+        route = plan_transfer_route(
+            Transfer("R", source, destination, "move"),
+            occupied_squares=(source, blocker), occupied_parking_slots=(),
+            geometry=self._geometry(26, 26),
+        )
+        self.assertGreater(len(route.points), 2)
 
     def test_occupied_center_blocks_direct_diagonal_even_with_clearance_override(self) -> None:
         source, destination, blocker = (BoardSquare(name) for name in ("c1", "h6", "d2"))
@@ -405,6 +487,9 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             plan_transfer_route(transfer, occupied_squares=(source,),
                                 occupied_parking_slots=(), ignore_piece_clearance=1)
+        with self.assertRaises(TypeError):
+            plan_transfer_route(transfer, occupied_squares=(source,),
+                                occupied_parking_slots=(), allow_direct_moves=1)
 
     def test_waypoint_limit_reports_error_without_truncating(self) -> None:
         transfer = Transfer("P", BoardSquare("e4"), ParkingSlot(0), "capture")
@@ -487,7 +572,9 @@ class RoutingTests(unittest.TestCase):
             if start_square != end_square:
                 self.assertEqual((abs(dx), abs(dy)), (1, 1), (start, end))
             else:
-                self.assertFalse(start_square)
+                if start_square:
+                    self.assertEqual(len(points), 2)
+                    self.assertLessEqual(max(abs(dx), abs(dy)), 4)
                 self.assertTrue(
                     (dx == 0 and dy != 0 and dy % 2 == 0) or
                     (dy == 0 and dx != 0 and dx % 2 == 0) or

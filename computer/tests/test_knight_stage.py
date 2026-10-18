@@ -150,14 +150,14 @@ class GeneralClearanceStageTests(unittest.TestCase):
 
     def test_midboard_rook_and_queen_carries_can_stage_a_blocker(self) -> None:
         # With 23 mm measured pieces, each neighboring piece closes an
-        # approach from e4. The same one-blocker search works for two kinds
-        # of legal sliding move, well away from the opening knight squares.
+        # grid approach from e4. Use a three-square carry, beyond the direct
+        # option, to exercise staging for both kinds of legal sliding move.
         wide_geometry = replace(GEOMETRY, moving_diameter_mm=23, occupied_diameter_mm=23)
         slots = [None] * 32
         for piece in ("R", "Q"):
             with self.subTest(piece=piece):
                 squares = {"e4": piece, "d4": "P", "f4": "P"}
-                original = Transfer(piece, BoardSquare("e4"), BoardSquare("e6"), "move")
+                original = Transfer(piece, BoardSquare("e4"), BoardSquare("e7"), "move")
                 with self.assertRaises(RouteError):
                     plan_transfer_route(
                         original, occupied_squares=_occupied_squares(squares),
@@ -167,7 +167,7 @@ class GeneralClearanceStageTests(unittest.TestCase):
                 actions = plan_cleared_transfer(squares, slots, original, wide_geometry)
                 self.assertEqual(actions, (
                     Transfer("P", BoardSquare("d4"), BoardSquare("c4"), "clearance_stage"),
-                    Transfer(piece, BoardSquare("e4"), BoardSquare("e6"), "clearance_move"),
+                    Transfer(piece, BoardSquare("e4"), BoardSquare("e7"), "clearance_move"),
                     Transfer("P", BoardSquare("c4"), BoardSquare("d4"), "clearance_restore"),
                 ))
                 self.assert_strict_equivalent(squares, slots, original, actions, wide_geometry)

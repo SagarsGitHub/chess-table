@@ -342,7 +342,7 @@ assert(!relayHigh);
 modelEnabled = true; updateModel();
 
 let id = request('HELLO');
-assert(serial.includes('@' + id + ' DONE HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,CARRY_OFFSET,OFFSET,SAVE,GEOM,OVER20'));
+assert(serial.includes('@' + id + ' DONE HELLO V=1 CAPS=STATUS,HOME,REF,STOP,MAP,CARRY,CARRY_DIAG,CARRY_DIRECT,CARRY_OFFSET,OFFSET,SAVE,GEOM,OVER20'));
 id = request('STATUS');
 assert(serial.includes('DONE STATUS REF=0 BUSY=0 MAP=0 SAVED=' + (restoreTest ? 1 : 0)));
 id = request('GEOM'); expectError(id, 'REFERENCE');
@@ -427,6 +427,43 @@ if (badStorage) {
   carry(1, 18, '31424455');
   id = request('CARRY 1 18 31424455'); expectError(id, 'MAP'); noMotion();
   console.log('PASS square-to-square carry commits occupancy only after release');
+
+  // Whole center-to-center routes may move one or two squares on a rank,
+  // file, or 45-degree diagonal, including their normal delivery overshoot.
+  for (const [destination, encoded] of [
+    [19, '5575'], [20, '5595'], [26, '5557'], [34, '5559'],
+    [27, '5577'], [36, '5599'],
+  ]) {
+    map([18]);
+    carry(18, destination, encoded);
+    id = request('CARRY 18 ' + destination + ' ' + encoded);
+    expectError(id, 'MAP'); noMotion();
+  }
+  map([36]);
+  carry(36, 18, '9955');
+  function rejectDirect(verb) {
+    const before = counts(), relayCount = relayEvents.length;
+    const rejected = request(verb);
+    expectError(rejected, 'ROUTE'); noMotion();
+    assert.deepEqual(counts(), before, 'invalid direct route rejected before any travel');
+    assert.equal(relayEvents.length, relayCount, 'invalid direct route never energizes magnet');
+  }
+  map([18, 19]);
+  rejectDirect('CARRY 18 20 5595'); // d3 blocks the two-square rank.
+  map([18, 26]);
+  rejectDirect('CARRY 18 34 5559'); // c4 blocks the two-square file.
+  map([18, 27]);
+  rejectDirect('CARRY 18 36 5599'); // d4 blocks the two-square diagonal.
+  map([18]);
+  rejectDirect('CARRY 18 21 55B5'); // Three squares.
+  rejectDirect('CARRY 18 28 5597'); // Knight-shaped center leg.
+  rejectDirect('CARRY 18 20 557595'); // A direct leg embedded in a longer route.
+  rejectDirect('CARRY_OFFSET 18 NE 19 5575'); // Actual offset direction differs.
+  map([0, 65]);
+  rejectDirect('CARRY 0 1 1131'); // P01 lies within 18 mm of the loaded rank.
+  map([1, 64]);
+  rejectDirect('CARRY 1 0 3111'); // P00 clears the nominal leg but blocks overshoot.
+  console.log('PASS bounded direct rank/file/diagonal carry, occupancy, clearance, offset, and no-motion guards');
 
   // The nominal final leg clears P01, but extending from a1 toward (2,0)
   // would pass within one piece diameter of that occupied parking center.

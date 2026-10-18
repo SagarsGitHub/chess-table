@@ -72,10 +72,12 @@ class PieceOffsetGeometryTests(unittest.TestCase):
         centered = plan_transfer_route(
             transfer, occupied_squares=(source, blocker),
             occupied_parking_slots=(), geometry=measured, max_waypoints=12,
+            allow_direct_moves=False,
         )
         displaced = plan_transfer_route(
             transfer, occupied_squares=(source, blocker),
             occupied_parking_slots=(), geometry=measured, max_waypoints=12,
+            allow_direct_moves=False,
             offset_positions_mm={blocker: offset_target_mm(nudge("p", "d3", "NE"), measured)},
         )
         self.assertEqual(centered.wire_points[1][1], 6)
@@ -123,6 +125,7 @@ class PieceOffsetGeometryTests(unittest.TestCase):
             source_offset_mm=source_mm, offset_positions_mm={source: source_mm},
         )
         self.assertEqual(route.source_offset_mm, source_mm)
+        self.assertGreater(len(route.points), 2)
         with self.assertRaisesRegex(RouteError, "matching source_offset_mm"):
             plan_transfer_route(
                 transfer, occupied_squares=(source,), occupied_parking_slots=(),

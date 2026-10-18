@@ -51,19 +51,20 @@ class PlayConfigurationTests(unittest.TestCase):
         self.assertFalse(firmware.referenced)
         self.assertTrue(firmware.closed)
 
-    def test_firmware_without_overshoot_capability_is_rejected_before_homing(self) -> None:
+    def test_firmware_without_required_motion_capabilities_is_rejected_before_homing(self) -> None:
         class UncompensatedFirmware:
             def __init__(self) -> None:
                 self.stream = io.BytesIO()
                 self.homed = False
+                self.capabilities = {
+                    "STATUS", "HOME", "REF", "MAP", "CARRY", "CARRY_OFFSET",
+                    "CARRY_DIAG", "CARRY_DIRECT", "GEOM", "OFFSET", "OVER20",
+                }
 
             def hello(self):
                 return SimpleNamespace(
                     version=1,
-                    capabilities={
-                        "STATUS", "HOME", "REF", "MAP", "CARRY", "CARRY_OFFSET",
-                        "CARRY_DIAG", "GEOM", "OFFSET",
-                    },
+                    capabilities=self.capabilities,
                 )
 
             def home(self):
@@ -72,15 +73,18 @@ class PlayConfigurationTests(unittest.TestCase):
             def close(self):
                 self.stream.close()
 
-        firmware = UncompensatedFirmware()
-        with tempfile.TemporaryDirectory() as temporary:
-            with patch("chess_table_host.play.open_serial", return_value=firmware):
-                with self.assertRaisesRegex(GameStateError, "OVER20"):
-                    _connect_physical(
-                        "COM3", full_home=True,
-                        serial_log=Path(temporary) / "serial.jsonl",
-                    )
-        self.assertFalse(firmware.homed)
+        for missing in ("OVER20", "CARRY_DIRECT"):
+            with self.subTest(missing=missing):
+                firmware = UncompensatedFirmware()
+                firmware.capabilities.remove(missing)
+                with tempfile.TemporaryDirectory() as temporary:
+                    with patch("chess_table_host.play.open_serial", return_value=firmware):
+                        with self.assertRaisesRegex(GameStateError, missing):
+                            _connect_physical(
+                                "COM3", full_home=True,
+                                serial_log=Path(temporary) / "serial.jsonl",
+                            )
+                self.assertFalse(firmware.homed)
 
     def test_self_play_finishes_checkmate_without_human_move_or_confirmation_prompts(self) -> None:
         planned = ("f2f3", "e7e5", "g2g4", "d8h4")

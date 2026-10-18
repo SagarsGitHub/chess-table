@@ -66,6 +66,9 @@ BoardController::StartError BoardController::startCarry(
         return StartError::Route;
     const uint8_t parking = source >= 64 ? source : destination;
     const bool hasParking = parking >= 64;
+    // Only an entire ordinary board-to-board carry may bypass the grid.
+    // Limit the direct path to one or two squares along a rank/file/diagonal.
+    const bool direct = !hasParking && count == 2;
     const HalfSquarePoint parkPoint = hasParking ? locationHalf(parking) : HalfSquarePoint{0, 0};
     for (uint8_t i = 0; i < count; ++i) {
         const HalfSquarePoint p = points[i];
@@ -87,13 +90,14 @@ BoardController::StartError BoardController::startCarry(
         if (i == 0) continue;
         const HalfSquarePoint previous = points[i - 1];
         const int8_t dx = p.x - previous.x, dy = p.y - previous.y;
-        // Even/even legs follow the grid (including 45-degree diagonals);
-        // odd/odd to odd/odd is forbidden. A parity change is one diagonal
-        // step into or out of a square center/parking approach.
+        // Even/even legs follow the grid (including 45-degree diagonals).
+        // Center-to-center is allowed only for the bounded whole direct route;
+        // a parity change is one diagonal step into/out of a square center.
         if (square == ((previous.x & 1) != 0)) {
             // A 45-degree grid diagonal may pass through an empty square center.
             // The occupied-center check below still rejects a standing piece.
-            if (square || !((dx == 0 && dy != 0) || (dy == 0 && dx != 0) ||
+            if ((square && (!direct || abs(dx) > 4 || abs(dy) > 4)) ||
+                !((dx == 0 && dy != 0) || (dy == 0 && dx != 0) ||
                             (dx != 0 && abs(dx) == abs(dy))))
                 return StartError::Route;
         } else if ((dx != 1 && dx != -1) || (dy != 1 && dy != -1))
@@ -101,8 +105,15 @@ BoardController::StartError BoardController::startCarry(
         // The host plans a path around occupied centers. Verify that an
         // occupied square or parking slot is not crossed by any segment.
         for (uint8_t occupied = 0; occupied < 96; ++occupied) {
-            if (occupied != source && pieces_.occupied(occupied) &&
-                pointOnSegment(locationHalf(occupied), previous, p)) return StartError::Route;
+            if (occupied == source || !pieces_.occupied(occupied)) continue;
+            const HalfSquarePoint standing = locationHalf(occupied);
+            if (pointOnSegment(standing, previous, p)) return StartError::Route;
+            // Short center lanes must also clear nearby occupied pieces and
+            // clamped perimeter slots, not merely avoid crossing their centers.
+            if (direct && distanceToSegmentSquared(routePoint(standing),
+                    routePoint(previous), target) <
+                    Config::PIECE_DIAMETER_MM * Config::PIECE_DIAMETER_MM)
+                return StartError::Route;
         }
     }
     BoardPoint release = routePoint(points[count - 1]);
@@ -134,7 +145,7 @@ BoardController::StartError BoardController::startCarryOffset(
     if (!referenced()) return StartError::Reference;
     if (source >= 64 || destination >= 64 || source == destination ||
         (dx != -1 && dx != 1) || (dy != -1 && dy != 1) ||
-        points == nullptr || count < 2 || count > MAX_WAYPOINTS) return StartError::Route;
+        points == nullptr || count < 3 || count > MAX_WAYPOINTS) return StartError::Route;
     if (!pieces_.canMove(source, destination)) return StartError::Map;
     const HalfSquarePoint sourcePoint = locationHalf(source);
     if (points[0].x != sourcePoint.x || points[0].y != sourcePoint.y)
@@ -156,8 +167,8 @@ BoardController::StartError BoardController::startCarryOffset(
             return StartError::Route;
     }
 
-    // Every valid board-to-board route has a grid waypoint before delivery,
-    // so startCarry computes its final loaded vector from the same waypoint.
+    // Offset carries retain a grid waypoint before delivery, so startCarry
+    // computes the final loaded vector from the same actual waypoint.
     const StartError result = startCarry(source, destination, points, count);
     if (result != StartError::None) return result;
     offsetStart_ = corner;
