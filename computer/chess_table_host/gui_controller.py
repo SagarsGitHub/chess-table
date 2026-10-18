@@ -22,6 +22,7 @@ from .host_runtime import (
 from .session_lock import SessionLock
 from .gui_remote import RemoteControlMixin, RemoteMoveTicket
 from .gui_worker import GameWorkerMixin
+from .reset_receipt import settle_reset_receipts
 
 
 MODES = frozenset({"human_engine", "self_play", "manual_both", "external"})
@@ -52,6 +53,8 @@ class GameController(RemoteControlMixin, GameWorkerMixin):
                 self.store.save(state)
             else:
                 state = self.store.load()
+                if settle_reset_receipts(state):
+                    self.store.save(state)
                 # Persist migrated metadata before any remote client can read it;
                 # physical inventory and plans remain unchanged.
                 if state_path.exists():

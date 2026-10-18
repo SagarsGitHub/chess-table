@@ -47,6 +47,21 @@ output=$(bash "$launcher" --dry-run --gui-port 49765)
 state=$(printf '%s\n' "$output" | sed -n 's/^Checkpoint: //p')
 [[ -n $state && ! -e $state ]]
 
+output=$(bash "$launcher" --dry-run --gui-port 49765 --enable-pocketmage \
+    --pocketmage-bind 127.0.0.1 --pocketmage-port 49767)
+[[ $output == *'PocketMage API: http://127.0.0.1:49767 (trusted LAN, no token)'* ]]
+[[ $output == *'Dry run: host was not started.'* ]]
+if bash "$launcher" --dry-run --gui-port 49765 --enable-pocketmage \
+    --pocketmage-port 49765 >/dev/null 2>&1; then
+    printf 'Expected colliding PocketMage/GUI ports to fail.\n' >&2
+    exit 1
+fi
+if bash "$launcher" --dry-run --enable-pocketmage \
+    --pocketmage-bind invalid >/dev/null 2>&1; then
+    printf 'Expected an invalid PocketMage bind address to fail.\n' >&2
+    exit 1
+fi
+
 if bash "$launcher" --resume runs/missing.json --dry-run --gui-port 49765 >/dev/null 2>&1; then
     printf 'Expected resume without explicit mode to fail.\n' >&2
     exit 1

@@ -1,7 +1,8 @@
 """Local browser control for a checkpointed chess-table game.
 
 Run ``python -m chess_table_host.gui --help``. The HTTP listener binds only to
-loopback. A single background worker owns the game runner, Stockfish, and the
+loopback; opt-in PocketMage control can also bind to the trusted LAN. A single
+background worker owns the game runner, Stockfish, and the
 serial link; HTTP reads use the last atomic checkpoint so they remain responsive
 while a physical CARRY is waiting for controller completion.
 """
@@ -9,13 +10,14 @@ while a physical CARRY is waiting for controller completion.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 from pathlib import Path
 import threading
 
 from .gui_http import GuiHTTPServer
 from .game import GameStateError
 from .host_config import DEFAULT_CONFIG, _load_config
-from .remote_http import RemoteHTTPServer, read_remote_token
+from .remote_http import PocketMageHTTPServer, RemoteHTTPServer, read_remote_token
 from .gui_controller import GameController, MODES
 # Preserve public convenience imports exposed by this entry point.
 from .gui_remote import RemoteMoveTicket
@@ -49,6 +51,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="enable the authenticated loopback remote API with this token file")
     parser.add_argument("--remote-http-port", type=int, default=8766,
                         help="loopback remote API port when --remote-token-file is supplied")
+    parser.add_argument("--enable-pocketmage", action="store_true",
+                        help="enable unauthenticated chess control on trusted Wi-Fi LAN")
+    parser.add_argument("--pocketmage-bind", default="0.0.0.0",
+                        help="PocketMage IPv4 interface address (default all interfaces)")
+    parser.add_argument("--pocketmage-port", type=int, default=8767,
+                        help="PocketMage LAN API port when --enable-pocketmage is supplied")
     args = parser.parse_args(argv)
     try:
         config = _load_config(args.config)
@@ -64,6 +72,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--remote-http-port must be in 1..65535")
     if args.remote_token_file and args.remote_http_port == args.http_port:
         parser.error("--remote-http-port must differ from --http-port")
+    if not 0 < args.pocketmage_port < 65536:
+        parser.error("--pocketmage-port must be in 1..65535")
+    try:
+        pocketmage_bind = ipaddress.IPv4Address(args.pocketmage_bind)
+        if pocketmage_bind.is_multicast or str(pocketmage_bind) == "255.255.255.255":
+            raise ValueError("invalid interface address")
+    except ValueError:
+        parser.error("--pocketmage-bind must be a literal IPv4 interface address or 0.0.0.0")
+    if args.enable_pocketmage and (args.pocketmage_port == args.http_port or
+                                  (args.remote_token_file and args.pocketmage_port == args.remote_http_port)):
+        parser.error("--pocketmage-port must differ from other enabled HTTP listener ports")
     try:
         remote_token = read_remote_token(args.remote_token_file) if args.remote_token_file else None
     except ValueError as exc:
@@ -90,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
     remote_server = None
     remote_thread = None
+    pocketmage_server = None
+    pocketmage_thread = None
     try:
         with GuiHTTPServer(("127.0.0.1", args.http_port), controller) as server:
             if remote_token is not None:
@@ -99,6 +120,13 @@ def main(argv: list[str] | None = None) -> int:
                 remote_thread = threading.Thread(target=remote_server.serve_forever, daemon=True)
                 remote_thread.start()
                 print(f"Chess table remote API: http://127.0.0.1:{args.remote_http_port}/v1/status")
+            if args.enable_pocketmage:
+                pocketmage_server = PocketMageHTTPServer(
+                    (args.pocketmage_bind, args.pocketmage_port), controller,
+                )
+                pocketmage_thread = threading.Thread(target=pocketmage_server.serve_forever, daemon=True)
+                pocketmage_thread.start()
+                print(f"Chess table PocketMage API: http://{args.pocketmage_bind}:{args.pocketmage_port}/v1/status")
             print(f"Chess table GUI: http://localhost:{server.server_port}/")
             print("Simulation only; no hardware will move." if args.simulate else
                   f"Physical Uno port: {serial_port}; keep the power cutoff reachable.")
@@ -111,6 +139,11 @@ def main(argv: list[str] | None = None) -> int:
             worker.join()
         return 0
     finally:
+        if pocketmage_server is not None:
+            pocketmage_server.shutdown()
+            pocketmage_server.server_close()
+        if pocketmage_thread is not None:
+            pocketmage_thread.join(timeout=5)
         if remote_server is not None:
             remote_server.shutdown()
             remote_server.server_close()

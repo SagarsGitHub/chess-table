@@ -27,7 +27,7 @@ Uncertain motion requires inspection and reconciliation before another move.
 | `gui_remote.py` | Aina request fences, queue tickets and durable receipt/status views. |
 | `host_runtime.py` | Shared connection setup, geometry, engine selection and checkpoint archival. Entry points retain link ownership. |
 | `gui_snapshot.py` | Synchronized checkpoint reads and browser history/action views; never reads the mutable runner. |
-| `remote_http.py` / `remote_contract.py` / `remote_session.py` | Aina authentication, typed requests, source binding and position fences. |
+| `remote_http.py` / `remote_contract.py` / `remote_session.py` | Aina authentication, PocketMage LAN transport, typed requests, source binding and position fences. |
 | `api_errors.py` | Structured refusals shared by HTTP adapters. |
 | `move_expression.py` | Speech cleanup and legal expression resolution. |
 | `gui_static/gui_*.js` / `build_gui.py` | Browser sources and generated `app.js`. |
@@ -61,6 +61,14 @@ receipts. Aina-bound games accept moves through that API; the GUI retains local
 STOP, reset and reconciliation controls. A move's acceptance means durable
 preparation. Wait for its committed receipt and status `can_move` before the
 next human move, including Stockfish's reply.
+
+## PocketMage control
+
+Enable `--enable-pocketmage --pocketmage-bind ADDRESS --pocketmage-port 8767`
+for trusted-LAN chess control. The separate `.tar` app displays host legal moves and
+supports manual, human/Stockfish and Stockfish self-play. Commands share the
+existing worker, ownership fences and checkpoint receipts. Aina remains
+authenticated on loopback. See [the API contract](../docs/POCKETMAGE_CONTROL.md).
 
 ## Checks and limits
 

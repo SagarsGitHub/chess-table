@@ -8,6 +8,7 @@ from uuid import UUID
 
 from .api_errors import ApiError
 from .checkpoint import RemoteMoveReceipt
+from .reset_receipt import RemoteResetReceipt
 
 
 def request_identifier(value: object, label: str) -> str:
@@ -37,20 +38,25 @@ class SessionStartRequest:
     source_game_id: str
     mode: str = "external"
     human: str = "white"
+    source_kind: str = "aina"
 
     @classmethod
-    def from_body(cls, value: object) -> "SessionStartRequest":
+    def from_body(cls, value: object, *, source_kind: str = "aina") -> "SessionStartRequest":
         body = _body(value, {"host_game_id", "request_id", "source_kind",
                              "source_game_id", "mode", "human"})
         mode, human = body.get("mode", "external"), body.get("human", "white")
-        if (not isinstance(mode, str) or mode not in {"external", "human_engine"} or
+        modes = {"external", "human_engine"}
+        if source_kind == "pocketmage":
+            modes.add("engine_engine")
+        if (not isinstance(mode, str) or mode not in modes or
                 not isinstance(human, str) or human not in {"white", "black"}):
             raise ApiError("invalid game mode or human color", HTTPStatus.BAD_REQUEST)
-        if body.get("source_kind") != "aina":
-            raise ApiError("source_kind must be aina", HTTPStatus.BAD_REQUEST)
+        if source_kind not in {"aina", "pocketmage"} or body.get("source_kind") != source_kind:
+            raise ApiError(f"source_kind must be {source_kind}", HTTPStatus.BAD_REQUEST)
         return cls(request_identifier(body.get("host_game_id"), "host_game_id"),
                    request_identifier(body.get("request_id"), "request_id"),
-                   bounded_text(body.get("source_game_id"), "source_game_id"), mode, human)
+                   bounded_text(body.get("source_game_id"), "source_game_id"), mode, human,
+                   source_kind)
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,32 @@ class SessionResetRequest:
         if not valid:
             raise ApiError("host_game_id must be a canonical UUID", HTTPStatus.BAD_REQUEST)
         return cls(identifier)
+
+
+@dataclass(frozen=True)
+class PocketMageResetRequest:
+    request_id: str
+    host_game_id: str
+    source_game_id: str
+    expected_ply: int
+    expected_fen: str
+    confirmed: bool
+
+    @classmethod
+    def from_body(cls, value: object) -> "PocketMageResetRequest":
+        body = _body(value, set(cls.__dataclass_fields__))
+        if body.get("confirmed") is not True:
+            raise ApiError("confirm automatic physical board reset first", HTTPStatus.BAD_REQUEST)
+        ply = body.get("expected_ply")
+        if type(ply) is not int or ply < 0:
+            raise ApiError("expected_ply must be a nonnegative integer", HTTPStatus.BAD_REQUEST)
+        host = SessionResetRequest.from_body({"host_game_id": body.get("host_game_id")}).host_game_id
+        return cls(request_identifier(body.get("request_id"), "request_id"), host,
+                   bounded_text(body.get("source_game_id"), "source_game_id"), ply,
+                   bounded_text(body.get("expected_fen"), "expected_fen"), True)
+
+    def receipt(self) -> RemoteResetReceipt:
+        return RemoteResetReceipt(**vars(self))
 
 
 @dataclass(frozen=True)

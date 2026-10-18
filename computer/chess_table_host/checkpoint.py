@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 import chess
 
 from .game_errors import GameStateError
+from .reset_receipt import RemoteResetReceipt, RESET_TERMINAL
 from .physical import _apply_action, _board_pieces, _replay_physical
 from .planner import (
     Action, BoardSquare, ManualReplacement, ParkingInventory, ParkingSlot,
@@ -23,7 +24,7 @@ from .planner import (
 )
 
 
-STATE_VERSION = 6
+STATE_VERSION = 7
 PROMOTION_RULE = "pawn_stand_in"
 
 
@@ -143,7 +144,7 @@ def _migrate_version_five(value: dict[str, object]) -> dict[str, object]:
     if (has_mode != has_human or
             ("remote_resolutions" in value and not (has_mode and has_human))):
         raise GameStateError("incomplete version 5 remote session metadata")
-    migrated = dict(value, version=STATE_VERSION)
+    migrated = dict(value, version=6)
     migrated.setdefault("remote_mode", "external")
     migrated.setdefault("remote_human", "white")
     migrated.setdefault("remote_resolutions", {})
@@ -384,6 +385,7 @@ class GameState:
     remote_start_request_id: str | None = None
     remote_resolutions: dict[str, RemoteMoveResolution] = field(default_factory=dict)
     remote_receipts: dict[str, RemoteMoveReceipt] = field(default_factory=dict)
+    remote_reset_receipts: dict[str, RemoteResetReceipt] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.initial_fen is None:
@@ -428,6 +430,7 @@ class GameState:
         except (ValueError, TypeError) as exc:
             raise GameStateError(f"invalid saved physical position: {exc}") from exc
         self._validate_remote_session(board)
+        self._validate_remote_resets(board)
         if not board.is_valid():
             raise GameStateError("committed chess position is invalid")
         if self.reset is not None:
@@ -443,10 +446,12 @@ class GameState:
     def _validate_remote_session(self, board: chess.Board) -> None:
         """Tie remote command fences to replayed history before motion resumes."""
         if (not isinstance(self.remote_mode, str) or
-                self.remote_mode not in {"external", "human_engine"} or
+                self.remote_mode not in {"external", "human_engine", "engine_engine"} or
                 not isinstance(self.remote_human, str) or
                 self.remote_human not in {"white", "black"}):
             raise GameStateError("invalid remote game mode or human color")
+        if self.remote_mode == "engine_engine" and self.source_kind != "pocketmage":
+            raise GameStateError("engine_engine requires a PocketMage session")
         if not isinstance(self.remote_resolutions, dict):
             raise GameStateError("invalid remote move resolution index")
         if not isinstance(self.remote_receipts, dict):
@@ -455,7 +460,8 @@ class GameState:
             if (self.source_game_id is not None or self.remote_start_request_id is not None or
                     self.remote_receipts or self.remote_resolutions):
                 raise GameStateError("unbound game has remote session data")
-        elif (self.source_kind != "aina" or not isinstance(self.source_game_id, str) or
+        elif (not isinstance(self.source_kind, str) or self.source_kind not in {"aina", "pocketmage"} or
+              not isinstance(self.source_game_id, str) or
               not self.source_game_id or len(self.source_game_id) > 256 or
               not isinstance(self.remote_start_request_id, str) or
               not self.remote_start_request_id or len(self.remote_start_request_id) > 128):
@@ -506,6 +512,32 @@ class GameState:
                     receipt.expected_fen != self.board_fen or
                     receipt.uci != self.pending.uci):
                 raise GameStateError("remote receipt differs from pending move")
+
+    def _validate_remote_resets(self, board: chess.Board) -> None:
+        if not isinstance(self.remote_reset_receipts, dict):
+            raise GameStateError("invalid remote reset receipt index")
+        active = []
+        replay = board.root()
+        positions = [replay.fen()]
+        for move in board.move_stack:
+            replay.push(move)
+            positions.append(replay.fen())
+        for key, receipt in self.remote_reset_receipts.items():
+            if not isinstance(receipt, RemoteResetReceipt):
+                raise GameStateError("invalid remote reset receipt")
+            receipt.validate()
+            if key != receipt.request_id:
+                raise GameStateError("remote reset receipt index differs from request")
+            if receipt.state not in RESET_TERMINAL:
+                if (receipt.host_game_id != self.host_game_id or
+                        self.source_kind != "pocketmage" or
+                        receipt.source_game_id != self.source_game_id or
+                        receipt.expected_ply >= len(positions) or
+                        receipt.expected_fen != positions[receipt.expected_ply]):
+                    raise GameStateError("active reset receipt differs from game history")
+                active.append(receipt)
+        if len(active) > 1:
+            raise GameStateError("multiple active remote reset receipts")
 
     def _validate_remote_command(
         self, request_id: str, command: RemoteMoveReceipt, positions: list[str],
@@ -648,17 +680,23 @@ class GameState:
             "remote_receipts": {
                 key: receipt.to_json() for key, receipt in sorted(self.remote_receipts.items())
             },
+            "remote_reset_receipts": {
+                key: receipt.to_json() for key, receipt in sorted(self.remote_reset_receipts.items())
+            },
         }
 
     @classmethod
     def from_json(cls, value: object) -> GameState:
         """Load supported checkpoint versions without guessing physical state."""
         if (not isinstance(value, dict) or type(value.get("version")) is not int or
-                value["version"] not in {1, 2, 3, 4, 5, STATE_VERSION}):
+                value["version"] not in {1, 2, 3, 4, 5, 6, STATE_VERSION}):
             raise GameStateError("unsupported game-state version")
         try:
             if value["version"] == 5:
                 value = _migrate_version_five(value)
+            if value["version"] == 6:
+                value = dict(value, version=STATE_VERSION)
+                value.setdefault("remote_reset_receipts", {})
             version = value["version"]
             if version in {3, 4, STATE_VERSION} and value.get("promotion_rule") != PROMOTION_RULE:
                 raise GameStateError("game-state promotion rule does not match pawn stand-in design")
@@ -704,6 +742,7 @@ class GameState:
                 remote_mode = value["remote_mode"]
                 remote_human = value["remote_human"]
                 remote_resolutions_data = value["remote_resolutions"]
+                remote_reset_receipts_data = value["remote_reset_receipts"]
             else:
                 host_game_id = str(uuid4())
                 source_kind = source_game_id = remote_start_request_id = None
@@ -711,10 +750,13 @@ class GameState:
                 remote_mode = value.get("remote_mode", "external")
                 remote_human = value.get("remote_human", "white")
                 remote_resolutions_data = value.get("remote_resolutions", {})
+                remote_reset_receipts_data = {}
             if not isinstance(remote_receipts_data, dict):
                 raise GameStateError("invalid remote receipt index")
             if not isinstance(remote_resolutions_data, dict):
                 raise GameStateError("invalid remote move resolution index")
+            if not isinstance(remote_reset_receipts_data, dict):
+                raise GameStateError("invalid remote reset receipt index")
             state = cls(
                 board_fen=value["board_fen"],
                 committed_parking=ParkingInventory(tuple(value["committed_parking"])),
@@ -738,6 +780,10 @@ class GameState:
                 remote_receipts={
                     key: RemoteMoveReceipt.from_json(item)
                     for key, item in remote_receipts_data.items()
+                },
+                remote_reset_receipts={
+                    key: RemoteResetReceipt.from_json(item)
+                    for key, item in remote_reset_receipts_data.items()
                 },
             )
             state.validate()

@@ -1,4 +1,4 @@
-"""Authenticated loopback API for an external chess-table controller.
+"""Bounded remote APIs sharing the single chess-table controller.
 
 This server deliberately has a handler separate from the browser GUI. It
 offers no reconciliation or raw serial controls. Stockfish is selected
@@ -8,6 +8,7 @@ through the typed session-start contract and remains owned by the host.
 from __future__ import annotations
 
 import hmac
+import ipaddress
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -16,7 +17,7 @@ from typing import Any, TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
 
 from .game import GameStateError
-from .api_errors import ApiError
+from .api_errors import ApiError, ResetNotAccepted
 from .planner import PlanError
 from .routing import RouteError
 from .serial_link import LinkError
@@ -26,6 +27,9 @@ if TYPE_CHECKING:
 
 
 MAX_BODY_BYTES = 8192
+REMOTE_POST_PATHS = frozenset({"/v1/session/start", "/v1/session/reset", "/v1/moves",
+                               "/v1/moves/resolve", "/v1/stop"})
+POCKETMAGE_POST_PATHS = frozenset({"/v1/session/start", "/v1/session/reset", "/v1/moves", "/v1/stop"})
 
 
 def read_remote_token(path: Path) -> str:
@@ -43,6 +47,8 @@ def read_remote_token(path: Path) -> str:
 class RemoteHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    source_kind = "aina"
+    post_paths = REMOTE_POST_PATHS
 
     def __init__(self, address: tuple[str, int], controller: GameController, token: str):
         if address[0] != "127.0.0.1":
@@ -55,8 +61,36 @@ class RemoteHTTPServer(ThreadingHTTPServer):
         super().__init__(address, RemoteHandler)
 
 
+class PocketMageHTTPServer(ThreadingHTTPServer):
+    """Explicitly enabled, unauthenticated IPv4 LAN control for PocketMage.
+
+    This exposes chess intents and STOP only. It never owns a separate runner,
+    serial connection, reconciliation flow, or engine process. Physical reset
+    intents use the existing controller's single checkpointed worker.
+    """
+
+    daemon_threads = True
+    allow_reuse_address = True
+    source_kind = "pocketmage"
+    post_paths = POCKETMAGE_POST_PATHS
+
+    def __init__(self, address: tuple[str, int], controller: GameController):
+        try:
+            bind = ipaddress.IPv4Address(address[0])
+        except ipaddress.AddressValueError as exc:
+            raise ValueError("PocketMage bind must be a literal IPv4 address") from exc
+        if bind.is_multicast or bind == ipaddress.IPv4Address("255.255.255.255"):
+            raise ValueError("PocketMage bind must be an IPv4 interface address or 0.0.0.0")
+        self.controller = controller
+        super().__init__(address, RemoteHandler)
+
+
 class RemoteHandler(BaseHTTPRequestHandler):
-    server: RemoteHTTPServer
+    server: RemoteHTTPServer | PocketMageHTTPServer
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(10)
 
     def log_message(self, _format: str, *_args: object) -> None:
         # Do not log arbitrary request paths or authorization material.
@@ -77,13 +111,35 @@ class RemoteHandler(BaseHTTPRequestHandler):
         self._send_json({"error": {"code": code, "message": message}}, status)
 
     def _authorized(self) -> bool:
+        if len(self.headers.get_all("Host", [])) != 1:
+            self._error("forbidden", "one Host header required", HTTPStatus.FORBIDDEN)
+            return False
         host = self.headers.get("Host")
+        if self.headers.get("Origin") is not None:
+            self._error("forbidden", "browser origins are not accepted", HTTPStatus.FORBIDDEN)
+            return False
+        if self.server.source_kind == "pocketmage":
+            # Literal destination addresses keep a browser's DNS name from
+            # rebinding onto this unauthenticated LAN listener.
+            try:
+                parsed = urlsplit("//" + host)
+                address = ipaddress.IPv4Address(parsed.hostname)
+                valid = (parsed.port == self.server.server_port and
+                         parsed.username is None and parsed.password is None and
+                         not parsed.path and not parsed.query and not parsed.fragment and
+                         not address.is_unspecified and not address.is_multicast and
+                         address != ipaddress.IPv4Address("255.255.255.255") and
+                         (self.server.server_address[0] == "0.0.0.0" or
+                          str(address) == self.server.server_address[0]))
+            except (ValueError, TypeError):
+                valid = False
+            if not valid:
+                self._error("forbidden", "literal destination IP and listener port required",
+                            HTTPStatus.FORBIDDEN)
+            return valid
         if host not in {f"127.0.0.1:{self.server.server_port}",
                         f"localhost:{self.server.server_port}"}:
             self._error("forbidden", "local Host required", HTTPStatus.FORBIDDEN)
-            return False
-        if self.headers.get("Origin") is not None:
-            self._error("forbidden", "browser origins are not accepted", HTTPStatus.FORBIDDEN)
             return False
         supplied = self.headers.get("Authorization", "")
         expected = f"Bearer {self.server.token}"
@@ -97,6 +153,9 @@ class RemoteHandler(BaseHTTPRequestHandler):
         return True
 
     def _body(self) -> dict[str, Any]:
+        if (self.headers.get("Transfer-Encoding") is not None or
+                len(self.headers.get_all("Content-Length", [])) != 1):
+            raise ApiError("one Content-Length and no Transfer-Encoding required", HTTPStatus.BAD_REQUEST)
         if self.headers.get_content_type() != "application/json":
             raise ApiError("send application/json", HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
         try:
@@ -114,6 +173,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
         return value
 
     def _handle_error(self, exc: Exception) -> None:
+        if isinstance(exc, ResetNotAccepted):
+            self._send_json({"error": {"code": "reset_not_accepted", "message": str(exc),
+                                       "request": exc.request}}, exc.status)
+            return
         if isinstance(exc, ApiError):
             status = exc.status
         elif isinstance(exc, OSError):
@@ -144,9 +207,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
         try:
             if path == "/v1/status":
                 self._send_json(self.server.controller.remote_status())
+            elif (self.server.source_kind == "pocketmage" and
+                  path.startswith("/v1/resets/") and path.count("/") == 3):
+                request_id = unquote(path.removeprefix("/v1/resets/"))
+                self._send_json(self.server.controller.pocketmage_reset_receipt(request_id))
             elif path.startswith("/v1/moves/") and path.count("/") == 3:
                 request_id = unquote(path.removeprefix("/v1/moves/"))
-                self._send_json(self.server.controller.remote_receipt(request_id))
+                self._send_json(self.server.controller.remote_receipt(
+                    request_id, source_kind=self.server.source_kind))
             else:
                 self._error("not_found", "route not found", HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -156,21 +224,28 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         path = urlsplit(self.path).path
-        if path not in {"/v1/session/start", "/v1/session/reset", "/v1/moves",
-                        "/v1/moves/resolve", "/v1/stop"}:
+        if path not in self.server.post_paths:
             self._error("not_found", "route not found", HTTPStatus.NOT_FOUND)
             return
         try:
             body = self._body()
             controller = self.server.controller
             if path == "/v1/session/start":
-                self._send_json(controller.remote_start(body), HTTPStatus.ACCEPTED)
+                self._send_json(controller.remote_start(
+                    body, source_kind=self.server.source_kind), HTTPStatus.ACCEPTED)
             elif path == "/v1/session/reset":
-                self._send_json(controller.remote_reset(body), HTTPStatus.ACCEPTED)
+                if self.server.source_kind == "pocketmage":
+                    receipt = controller.pocketmage_reset(body)
+                    status = HTTPStatus.OK if receipt["state"] in {
+                        "committed", "aborted", "reconciliation_required",
+                    } else HTTPStatus.ACCEPTED
+                    self._send_json(receipt, status)
+                else:
+                    self._send_json(controller.remote_reset(body), HTTPStatus.ACCEPTED)
             elif path == "/v1/moves/resolve":
                 self._send_json(controller.remote_resolve_move(body))
             elif path == "/v1/moves":
-                receipt = controller.remote_submit_move(body)
+                receipt = controller.remote_submit_move(body, source_kind=self.server.source_kind)
                 status = (HTTPStatus.OK if receipt["state"] in {"committed", "aborted"}
                           else HTTPStatus.ACCEPTED)
                 self._send_json(receipt, status)

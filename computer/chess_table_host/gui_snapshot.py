@@ -15,6 +15,8 @@ from typing import Any
 import chess
 
 from .game import GameState, JsonGameStore
+from .game_errors import GameStateError
+from .reset_receipt import RESET_TERMINAL, RemoteResetReceipt
 
 
 class SynchronizedGameStore(JsonGameStore):
@@ -34,9 +36,43 @@ class SynchronizedGameStore(JsonGameStore):
 
     def save(self, state: GameState) -> None:
         with self._io_lock:
+            # An API reset intent may be registered while the sole worker is
+            # finishing a chess carry. Merge only this metadata into its next
+            # checkpoint; never replace the worker's physical snapshot.
+            try:
+                stored = super().load()
+            except FileNotFoundError:
+                # DrvFS can briefly hide an atomically replaced file. The
+                # last successful snapshot still contains every registered
+                # receipt, even when this worker's in-memory copy predates it.
+                stored = self._last_state
+            if stored is not None:
+                for key, receipt in stored.remote_reset_receipts.items():
+                    current = state.remote_reset_receipts.get(key)
+                    if current is None:
+                        if receipt.state in RESET_TERMINAL or stored.host_game_id == state.host_game_id:
+                            state.remote_reset_receipts[key] = deepcopy(receipt)
+                    elif not current.same_intent(receipt):
+                        raise GameStateError("reset request_id differs from the saved intent")
+                    elif receipt.state in RESET_TERMINAL or (
+                        receipt.state == "in_flight" and current.state == "prepared"
+                    ):
+                        state.remote_reset_receipts[key] = deepcopy(receipt)
+            if state.reset is not None:
+                for receipt in state.remote_reset_receipts.values():
+                    if receipt.state == "prepared":
+                        receipt.state = "in_flight"
             super().save(state)
             self._last_state = deepcopy(state)
             self._last_save_at = time.monotonic()
+
+    def register_reset_receipt(self, receipt: RemoteResetReceipt, validate) -> None:
+        """Fence and register against one atomic snapshot before motion starts."""
+        with self._io_lock:
+            state = super().load()
+            validate(state)
+            state.remote_reset_receipts[receipt.request_id] = receipt
+            self.save(state)
 
     def load(self) -> GameState:
         with self._io_lock:

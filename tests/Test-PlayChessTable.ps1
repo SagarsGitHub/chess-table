@@ -58,6 +58,18 @@ try {
     Assert-True ($launch[$engineIndex + 1] -eq '/custom/stockfish') 'Explicit -Engine did not override the default.'
 
     $global:launcherWslCalls = @()
+    $null = & (Join-Path $repoRoot 'Start-ChessTable.ps1') -GuiPort 18765 `
+        -EnablePocketMage -PocketMageBind '192.0.2.10' -PocketMagePort 18767
+    $launch = @($global:launcherWslCalls[-1])
+    Assert-True ($launch -contains '--enable-pocketmage') 'PocketMage listener was not enabled.'
+    $bindIndex = [array]::IndexOf($launch, '--pocketmage-bind')
+    Assert-True ($launch[$bindIndex + 1] -eq '192.0.2.10') 'PocketMage bind address was not forwarded.'
+    $portIndex = [array]::IndexOf($launch, '--pocketmage-port')
+    Assert-True ($launch[$portIndex + 1] -eq '18767') 'PocketMage port was not forwarded.'
+    $probes = @($global:launcherWslCalls | Where-Object { $_ -contains '-c' -and $_[-1] -eq '192.0.2.10' })
+    Assert-True ($probes.Count -eq 1) 'PocketMage availability probe did not use the configured bind address.'
+
+    $global:launcherWslCalls = @()
     $global:launcherUsbCalls = @()
     $output = & (Join-Path $repoRoot 'Play-ChessTable.ps1') -GuiPort 18765 -AinaPort 18766 -DryRun 6>&1 | Out-String
     Assert-True ($output -like '*Mode: Physical*') 'Daily wrapper did not select physical mode.'

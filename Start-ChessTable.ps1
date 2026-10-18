@@ -34,6 +34,10 @@ param(
     [int]$GuiPort = 8765,
     [ValidateRange(1, 65535)]
     [int]$AinaPort = 8766,
+    [switch]$EnablePocketMage,
+    [string]$PocketMageBind = '0.0.0.0',
+    [ValidateRange(1, 65535)]
+    [int]$PocketMagePort = 8767,
     [string]$Distribution,
     [string]$Engine,
     [switch]$FullHome,
@@ -72,7 +76,7 @@ function Test-WslPath {
 }
 
 function Assert-WslLoopbackPortAvailable {
-    param([int]$CheckPort, [string]$Purpose, [string]$PortOption)
+    param([int]$CheckPort, [string]$Purpose, [string]$PortOption, [string]$BindAddress = '127.0.0.1')
 
     # Probe in the selected WSL distribution, where the Python host binds.
     # Match the HTTP servers' SO_REUSEADDR setting so a recently closed port
@@ -83,11 +87,11 @@ import sys
 try:
     with socket.socket() as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((socket.inet_ntoa(bytes((127, 0, 0, 1))), int(sys.argv[1])))
+        sock.bind((sys.argv[2], int(sys.argv[1])))
 except OSError:
     sys.exit(1)
 '@
-    $arguments = @($wslPrefix) + @('--exec', $pythonPath, '-c', $probe, [string]$CheckPort)
+    $arguments = @($wslPrefix) + @('--exec', $pythonPath, '-c', $probe, [string]$CheckPort, $BindAddress)
     & wsl.exe @arguments
     if ($LASTEXITCODE -ne 0) {
         throw "$Purpose port $CheckPort is unavailable in WSL. Stop the existing chess host or other listener, or choose another port with $PortOption. No new game was started."
@@ -121,6 +125,14 @@ if ($AinaTokenFile -and -not $EnableAina) {
 }
 if ($EnableAina -and $GuiPort -eq $AinaPort) {
     throw '-GuiPort and -AinaPort must differ.'
+}
+if ($EnablePocketMage -and ($PocketMagePort -eq $GuiPort -or ($EnableAina -and $PocketMagePort -eq $AinaPort))) {
+    throw '-PocketMagePort must differ from the GUI and enabled Aina ports.'
+}
+$pocketMageAddress = $null
+if (-not [Net.IPAddress]::TryParse($PocketMageBind, [ref]$pocketMageAddress) -or
+    $pocketMageAddress.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+    throw '-PocketMageBind must be a literal IPv4 address.'
 }
 if ($PSBoundParameters.ContainsKey('Engine') -and -not $Engine) {
     throw '-Engine must be a nonempty Stockfish executable or directory path.'
@@ -216,6 +228,11 @@ if ($EnableAina) {
 }
 
 Assert-WslLoopbackPortAvailable -CheckPort $GuiPort -Purpose 'GUI' -PortOption '-GuiPort'
+if ($EnablePocketMage) {
+    Assert-WslLoopbackPortAvailable -CheckPort $PocketMagePort -Purpose 'PocketMage API' -PortOption '-PocketMagePort' -BindAddress $PocketMageBind
+    $hostArguments += @('--enable-pocketmage', '--pocketmage-bind', $PocketMageBind,
+                        '--pocketmage-port', [string]$PocketMagePort)
+}
 if ($EnableAina) {
     Assert-WslLoopbackPortAvailable -CheckPort $AinaPort -Purpose 'Aina API' -PortOption '-AinaPort'
 }
@@ -236,6 +253,14 @@ Write-Host "Checkpoint: $stateWindowsPath"
 Write-Host "Mode: $Mode"
 if ($enginePath) { Write-Host "Stockfish: $enginePath" }
 Write-Host "Local GUI: http://localhost:$GuiPort/"
+if ($EnablePocketMage) {
+    $pocketMageDestination = $PocketMageBind
+    if ($pocketMageDestination -eq '0.0.0.0') {
+        $pocketMageDestination = Invoke-WslQuery -Command @($pythonPath, '-c', 'import socket; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.connect(("192.0.2.1",9)); print(s.getsockname()[0]); s.close()')
+    }
+    Write-Host "PocketMage API: http://${pocketMageDestination}:$PocketMagePort (trusted LAN, no token)"
+    Write-Host 'For WSL hosting, confirm this address is reachable from the device LAN.'
+}
 if ($EnableAina) {
     Write-Host "Aina API: http://127.0.0.1:$AinaPort/v1/status"
     Write-Host "Aina token file: $AinaTokenFile (value hidden)"

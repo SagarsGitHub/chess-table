@@ -63,7 +63,7 @@ def commit_simple_move(state: GameState, uci: str) -> None:
 class RemoteCheckpointMigrationTests(unittest.TestCase):
     def test_v6_requires_all_session_fields(self) -> None:
         saved = bound_game().to_json()
-        self.assertEqual(saved["version"], 6)
+        self.assertEqual(saved["version"], STATE_VERSION)
         for key in ("remote_mode", "remote_human", "remote_resolutions"):
             with self.subTest(key=key):
                 damaged = deepcopy(saved)
