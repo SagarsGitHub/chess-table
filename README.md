@@ -1,44 +1,30 @@
 # Chess Table
 
-Python host and Arduino Uno firmware for an automated chessboard with 32 perimeter parking slots. The host owns chess rules, Stockfish, routing, and checkpoints; the Uno controls motors and the magnet.
+Automated chessboard with a Python host, Arduino Uno motor controller, and 32 perimeter parking slots.
 
-**The board has no piece sensors.** Enter moves in software and let the table carry the pieces. Inspect and reconcile any interrupted or uncertain carry before another move. Preserve checkpoints and serial logs in `computer/runs/`.
+**The board has no piece sensors.** Inspect and reconcile uncertain motion before continuing. Preserve checkpoints and serial logs in `computer/runs/`.
 
-## Start from PowerShell
+## Run
 
 Complete the [one-time setup](docs/QUICK_START.md#once-per-machine), then run from the repository root:
 
 ```powershell
-.\Play-ChessTable.ps1                     # Physical host with Aina enabled
-.\Start-ChessTable.ps1 -EnableAina        # Simulation with Aina enabled
+.\Play-ChessTable.ps1                # Physical table
+.\Start-ChessTable.ps1 -EnableAina   # Simulation
 ```
-
-## Start on Linux or in WSL
 
 ```bash
-./Play-ChessTable.sh                     # Physical host with Aina enabled
-./Start-ChessTable.sh --enable-aina      # Simulation with Aina enabled
+./Play-ChessTable.sh                # Physical table
+./Start-ChessTable.sh --enable-aina # Simulation
 ```
 
-Keep the terminal open. Follow the [quick start](docs/QUICK_START.md) to start GUI or Aina play and resume the exact saved checkpoint.
+Open `http://localhost:8765/`, choose a mode, and start the game. Launching the host alone does not move pieces. See the [quick start](docs/QUICK_START.md) for local-only play, resume, USB, and recovery.
 
-## Status
+## Guides
 
-See the [roadmap](docs/ROADMAP.md) for accepted physical tests and remaining work.
+- [Host development](computer/README.md) and [Uno firmware](firmware/README.md)
+- [Architecture](docs/ARCHITECTURE.md), [routing](docs/ROUTING.md), and [serial protocol](docs/PROTOCOL.md)
+- [Aina setup and API](docs/REMOTE_AINA.md)
+- [Accepted work and remaining tests](docs/ROADMAP.md)
 
-For Linux startup and authenticated Aina control, use `Start-ChessTable.sh`
-and the [Aina setup guide](docs/REMOTE_AINA.md). The launcher starts the host;
-game play remains stopped until started through the GUI or Aina.
-
-## Repository map
-
-| Guide | Purpose |
-| --- | --- |
-| [Quick start](docs/QUICK_START.md) | Setup, launch, game commands, and recovery. |
-| [GUI runbook](docs/GUI_GAME.md) | Local play, inspection, and board reset. |
-| [Aina integration](docs/REMOTE_AINA.md) | Credentials, API contract, and troubleshooting. |
-| [Host](computer/README.md) / [firmware](firmware/README.md) | Development entry points and tests. |
-| [Architecture](docs/ARCHITECTURE.md) / [protocol](docs/PROTOCOL.md) | Ownership and wire contract. |
-| [Routing](docs/ROUTING.md) | Geometry and clearance limits. |
-| [Physical test runbook](docs/STAGE4_TEST_GAME.md) | USB, CLI tests, and interrupted-motion recovery. |
-| [Provenance](docs/PROVENANCE.md) | Original project and repository history. |
+The original `chess_automated` application remains in Git history. Its [MIT notice](LICENSES/chess_automated.txt) credits WouterSchols; the current host and imported firmware are maintained separately.

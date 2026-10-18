@@ -72,6 +72,16 @@ to FastAccelStepper. Configuration is in `include/config.h`.
 
 ## Build and verification
 
+Stop the host to release the serial port before flashing. From this directory:
+
+```bash
+pio run -t upload --upload-port /dev/ttyACM0
+```
+
+Replace the port with the detected device (`COM3` on Windows, for example).
+Resume the existing checkpoint after the update; the host handles reference
+and geometry setup. A browser refresh does not update firmware.
+
 Run `pio run` and `node tests/machine-sim.cjs` from this directory. The build
 must stay within the Uno flash and RAM limits. The compiled-HEX simulator covers
 GPIO, motors, relay, switches, and EEPROM; see [tests/README.md](tests/README.md)

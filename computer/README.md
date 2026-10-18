@@ -46,8 +46,7 @@ python -m chess_table_host.gui --help
 Stockfish path for the current machine; WSL needs Linux-visible paths.
 Physical play reads live `GEOM` and requires firmware capability `OVER20`;
 geometry fixtures are for simulation. Use the [quick start](../docs/QUICK_START.md)
-for launch commands, [GUI guide](../docs/GUI_GAME.md) for browser play, and
-[physical runbook](../docs/STAGE4_TEST_GAME.md) for USB setup and recovery.
+for launch commands, browser play, USB setup, and inspected recovery.
 
 ## Local Aina control API
 

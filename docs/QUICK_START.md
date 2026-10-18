@@ -1,65 +1,72 @@
 # Chess table quick start
 
-On this machine, use `C:\Users\sagar\Documents\Coding\chess-table`; elsewhere, use the local repository root. The host runs in native Linux or Ubuntu WSL 2. PowerShell wraps the WSL launcher.
+The host runs on native Linux or Ubuntu WSL 2; PowerShell wraps WSL. On this machine, use `C:\Users\sagar\Documents\Coding\chess-table`; elsewhere, use the local repository root.
 
 ## Once per machine
 
-1. Install host dependencies in Linux:
-
-   ```bash
-   cd /path/to/chess-table/computer
-   python3 -m venv .venv
-   .venv/bin/python -m pip install -r requirements.txt
-   ```
-
-2. Connect the Uno. Native Linux needs serial access, commonly membership in `dialout` followed by a new login. For WSL, install `usbipd-win`, find the Uno with `usbipd list`, and run `usbipd bind --busid <BUSID>` once in administrator PowerShell. Launchers attach the shared Uno on later runs. See the [USB setup](STAGE4_TEST_GAME.md#connect-the-uno-to-wsl-for-physical-play).
-3. Install Stockfish for engine games. Launchers find `Documents/Stockfish` automatically (Bash also checks lowercase `stockfish` and the Windows Documents folder in WSL). Override with `-Engine` or `--engine` if needed.
-4. For Aina, configure its [companion credential and host token](REMOTE_AINA.md#authentication-and-first-connection). Run one chess-capable companion beside the host, in the same Linux/WSL environment. Launchers enable the local API but do not start the companion.
-
-## Each game from PowerShell and WSL
-
-Stop the previous host with Ctrl+C in its terminal. For a fresh physical game, place all 32 pieces on starting squares, empty parking, and keep the independent power cutoff within reach.
-
-From the repository root:
-
-```powershell
-.\Play-ChessTable.ps1                     # Physical
-.\Start-ChessTable.ps1 -EnableAina        # Simulation
-```
-
-Each command creates and prints a fresh checkpoint path. The physical launcher discovers and attaches the Uno. Use `-UsbBusId <BUSID>` if several boards match, or `-Port /dev/serial/by-id/...` for an attached device. `-DryRun` checks settings without attaching USB or starting the host.
-
-## Each game on native Linux
-
-These commands also work inside WSL:
+Install the host dependencies in Linux:
 
 ```bash
-./Play-ChessTable.sh                     # Physical
-./Start-ChessTable.sh --enable-aina      # Simulation
+cd /path/to/chess-table/computer
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
-Use `--port /dev/serial/by-id/...` for an ambiguous device, `--dry-run` to check settings, or `./Start-ChessTable.sh --help` for options. Native Linux accesses USB directly.
+Install Stockfish for engine games. Launchers find `Documents/Stockfish` automatically; Bash also checks lowercase `stockfish` and the Windows Documents folder in WSL. Override with `-Engine` / `--engine`.
 
-For local-only play, use the full `Start` launcher without `-EnableAina` / `--enable-aina`; add `-Mode Physical` / `--mode physical` for hardware.
+For Aina, configure the [companion credential and host token](REMOTE_AINA.md#authentication-and-first-connection). Run one chess-capable companion beside the host in the same Linux/WSL environment. Launchers enable the API but do not start the companion.
 
-## Start play and check Aina
+## USB access
 
-Keep the launcher terminal open. For local play, open `http://localhost:8765/`, choose a mode, and press **Start game**. For Aina control, leave the GUI game unstarted and use:
+Close Arduino Serial Monitor and any previous GUI/CLI host before connecting. Native Linux may need serial-group access; run `sudo usermod -aG dialout "$USER"`, then start a new login.
 
-| Request | Effect |
-| --- | --- |
-| “start chess table” | Launch a fresh idle physical host. |
-| “start chess table in simulation mode” | Launch a fresh idle simulated host. |
-| “start a chess game against Stockfish with me as white” | Bind and start play as White. Use “black” for Black. |
-| “start a chess game in manual move mode” | Bind and start play with both sides entered manually. |
-| “chess table status” | Read expected position, turn, game ID, and phase. |
-| “knight to c3” or “D2, D4” | Resolve and submit a legal move in the current position. |
+For WSL, install `usbipd-win` and share the Uno once from **administrator PowerShell**:
 
-Launching a host and starting a game are separate operations. Starting physical play can reference or home the carriage. Status describes expected occupancy; it cannot verify the actual pieces. See [Aina troubleshooting](REMOTE_AINA.md#credential-changes-and-recovery) for connection or authentication failures.
+```powershell
+winget install --interactive --exact dorssel.usbipd-win
+usbipd list
+usbipd bind --busid <BUSID>
+```
+
+Launchers attach the shared Uno on later runs. To attach manually after a reboot or disconnect, use regular PowerShell:
+
+```powershell
+usbipd attach --wsl --busid <BUSID>
+```
+
+Windows cannot use the device while attached to WSL. From `computer/` in Linux, list ports with `.venv/bin/python -m chess_table_host.play --list-ports`. Use the detected `/dev/serial/by-id/...`, `/dev/ttyACM*`, or `/dev/ttyUSB*` path; the config's `COM3` is a Windows default.
+
+## Launch
+
+For a fresh physical game, place all 32 pieces on starting squares, empty parking, and keep the independent power cutoff within reach. Run from the repository root:
+
+```powershell
+.\Play-ChessTable.ps1                     # Physical, Aina enabled
+.\Start-ChessTable.ps1 -EnableAina        # Simulation, Aina enabled
+```
+
+On native Linux or inside WSL:
+
+```bash
+./Play-ChessTable.sh                     # Physical, Aina enabled
+./Start-ChessTable.sh --enable-aina      # Simulation, Aina enabled
+```
+
+Each launcher prints a fresh checkpoint path. Keep its terminal open; Ctrl+C stops the host. Use `-UsbBusId <BUSID>` for several matching WSL boards, or `-Port` / `--port` for an attached device. `-DryRun` / `--dry-run` checks settings before starting.
+
+For local browser play, use `Start-ChessTable` without `-EnableAina` / `--enable-aina`; add `-Mode Physical` / `--mode physical` for hardware. Simulation sends no commands to the Uno. See `./Start-ChessTable.sh --help` or PowerShell `Get-Help .\Start-ChessTable.ps1 -Detailed` for options.
+
+## Play from the browser
+
+Open the printed local address, normally `http://localhost:8765/`. Choose **Play Stockfish · White**, **Play Stockfish · Black**, **Stockfish vs Stockfish**, or **Manual · Both sides**, then **Start game**. On a human turn, select a piece and destination. Choose the legal promotion piece in the dialog; the same physical pawn remains its stand-in.
+
+**The board has no piece sensors.** Enter moves in software and leave the pieces for the table to carry. The board and 32-slot parking view show expected positions. Starting physical play can reference or home the carriage; the host reads live `GEOM` and sends `MAP` automatically. Normal matched `DONE CARRY`, `DONE CARRY_OFFSET`, and `DONE OFFSET` need no confirmation, but cannot prove physical delivery.
+
+For Aina play, leave the GUI game unstarted and ask Aina to start manual play or Stockfish with your chosen color. Aina then owns move entry; local STOP and recovery remain available. See [Aina commands and API](REMOTE_AINA.md).
 
 ## Resume the same game
 
-Keep the printed checkpoint and its adjacent serial log. Stop the old host, then reopen the **exact file in its original physical/simulation mode**. Relative paths are resolved from `computer/`:
+Use one running GUI or CLI process per checkpoint. Stop the old host, then reopen the **exact file in its original physical/simulation mode**. Relative paths resolve from `computer/`:
 
 ```powershell
 .\Play-ChessTable.ps1 -Resume -State 'runs\chess-physical-<saved-name>.json'
@@ -71,6 +78,31 @@ Keep the printed checkpoint and its adjacent serial log. Stop the old host, then
 ./Start-ChessTable.sh --mode simulation --enable-aina --resume 'runs/chess-sim-<saved-name>.json'
 ```
 
-For Aina, resume the matching game binding with its saved mode and human color. Restarting the process alone does not resume play.
+For Aina, send a matching session start with the saved mode and human color. Restarting the process alone does not resume play. A browser refresh only reloads the interface. After firmware changes, stop the host, [flash the Uno](../firmware/README.md#build-and-verification), then resume the checkpoint.
 
-**Never replay an uncertain carry.** Inspect the actual piece, endpoints, neighbors, and parking, then reconcile through the local GUI before another move. Choose a recovery outcome only after verifying or restoring the corresponding physical state. `DONE CARRY` advances expected occupancy but cannot prove delivery. Follow the [GUI recovery controls](GUI_GAME.md#pause-recover-and-reset) or [physical recovery runbook](STAGE4_TEST_GAME.md#interruption-recovery-and-evidence).
+## Pause, recover, and reset
+
+**Stop motion** sends `STOP` immediately during a physical carry, offset, home, or reference. During engine thinking, simulation, or between actions, it pauses at the next boundary. An interrupted action stays `in_flight` in the checkpoint.
+
+**Never replay an uncertain carry.** After STOP, fault, timeout, disconnect, reboot, missed pickup, or shifted piece, inspect the magnet, transfer endpoints, neighbors, and parking before more motion. In the local recovery panel:
+
+- For a carry, choose **Piece at source**, **Piece at destination**, or **Restored prior position** only after verifying or physically restoring that state.
+- For an offset, verify **Piece at center** or **Piece at corner**, or restore the prior position.
+- Restoring the prior position means the **entire committed board and parking inventory**, or the entire pre-reset position during reset. A capture interrupted after victim parking can leave the victim parked while the chess move is unfinished.
+
+Mark the inspection checkbox only after checking the actual pieces. Resolve uncertainty before **Start game** or reset. The host then restores carriage reference and matching expected occupancy; it cannot inspect the board for you.
+
+**End game & reset board** requests an orderly midgame reset: finish the current chess move, including every capture transfer, archive its checkpoint, then return pieces. With no pending move, the control reads **Reset board for new game**. Reset preflights the full plan and saves each action; a fresh standard-position game begins only after all 32 pieces are home and parking is empty. After an interrupted reset, inspect/reconcile its action and choose **Continue board reset**.
+
+Preserve `computer/runs/` checkpoints, `.before-reset-<UTC timestamp>.json` archives, adjacent `.serial.jsonl` transcripts, live geometry, and notes about stops, contact, slip, and delivery. See [routing limits](ROUTING.md) and [accepted/pending physical work](ROADMAP.md), including the unresolved old 155-ply checkpoint.
+
+## Optional CLI smoke test
+
+From `computer/`, first simulate the five-ply en passant line using a fresh state:
+
+```bash
+state="runs/smoke-$(date +%Y%m%d-%H%M%S).json"
+.venv/bin/python -m chess_table_host.play --simulate --new --state "$state" --geometry-file fixtures/board_geometry_2026-10-05.json --moves e2e4 a7a6 e4e5 d7d5 e5d6
+```
+
+For an attended physical trial from standard setup, use a **different fresh state**, replace `--simulate --geometry-file ...` with `--port /dev/serial/by-id/...`, and inspect the white pawn on d6, black pawn in its selected parking slot, a-pawn on a6, and other pieces. Add `--supervised` only when deliberately testing per-transfer prompts.
