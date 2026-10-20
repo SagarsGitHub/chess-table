@@ -8,6 +8,7 @@ The physical game, board reset, and inspected recovery are accepted after a 126-
 - Framed serial commands, completion IDs, STOP, fault/reboot detection, measured geometry, and perimeter parking are implemented and tested.
 - GUI and Aina play support manual moves and Stockfish, with shared ownership, position fences, and recoverable receipts.
 - [PocketMage control](POCKETMAGE_CONTROL.md) adds an opt-in trusted-LAN API for manual play, Stockfish with either color, self-play, STOP, and durable physical-reset requests through the same host.
+- [Chess.com integration](CHESSCOM.md) adds daily switch/reset commands and 30-minute update checks, monthly finished-game search, and a curated historical library with step controls and timed autoplay. [PocketMage support](POCKETMAGE_CHESSCOM.md) is planned; physical replay acceptance remains pending.
 - Short clear rank/file/diagonal carries now use direct one- or two-square paths. Longer or obstructed moves use grid routing, blocker staging, or checked within-square offsets.
 - Software checks cover captures, castling, en passant, promotion stand-ins, reset, and interrupted-motion recovery. The Uno retains measured travel limits and the 12-waypoint cap.
 

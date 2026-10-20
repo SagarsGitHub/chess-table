@@ -33,6 +33,9 @@ class GameWorkerMixin:
         with self._guard:
             if self._worker is not None:
                 raise ApiError("a game or board reset is already running")
+            if (task == self._game_loop and not reset_after and
+                    self._chesscom_bound(self._load_checkpoint())):
+                raise ApiError("recorded replay owns the table; use its playback controls or reset to change modes")
             self._stop.clear()
             self._reset_requested.clear()
             if reset_after:
@@ -56,6 +59,8 @@ class GameWorkerMixin:
         HTTP controls cannot start another game between the move and reset.
         """
         completed = False
+        game_task = task in (self._game_loop, self._chesscom_step, self._chesscom_autoplay_loop,
+                            self._chesscom_daily_switch_loop, self._chesscom_daily_catchup)
         try:
             task()
             completed = True
@@ -92,7 +97,7 @@ class GameWorkerMixin:
                         self._status = "Could not save the stopped move; inspect the checkpoint."
                         self._activity = "error"
             with self._guard:
-                if not (completed and task == self._game_loop and self._reset_requested.is_set()):
+                if not (completed and game_task and self._reset_requested.is_set()):
                     try:
                         saved = self._load_checkpoint()
                         if settle_reset_receipts(saved):
@@ -106,7 +111,7 @@ class GameWorkerMixin:
                     self._remote_ticket.ready.set()
                     self._remote_ticket = None
                 self._waiting = False
-                if completed and task == self._game_loop and self._reset_requested.is_set():
+                if completed and game_task and self._reset_requested.is_set():
                     self._reset_requested.clear()
                     self._mode = None
                     self._activity = "starting"
@@ -119,6 +124,8 @@ class GameWorkerMixin:
                 else:
                     self._reset_requested.clear()
                     self._worker = None
+                    if completed and task in (self._chesscom_daily_switch_loop, self._chesscom_daily_catchup):
+                        self._daily_worker_finished()
 
     def _approve_route(self, *_args) -> bool:
         return not self._stop.is_set()

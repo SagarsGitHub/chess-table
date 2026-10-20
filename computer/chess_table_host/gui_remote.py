@@ -123,6 +123,8 @@ class RemoteControlMixin:
                                HTTPStatus.SERVICE_UNAVAILABLE) from exc
         with self._guard:
             state = self._load_checkpoint()
+            if self._chesscom_bound(state):
+                raise ApiError("the table is bound to a recorded replay; reset it before remote play")
             if source_kind == "pocketmage" and state.reset is not None:
                 raise ApiError("inspect and continue the saved board reset using local host controls")
             if any(receipt.state not in RESET_TERMINAL for receipt in state.remote_reset_receipts.values()):

@@ -5,6 +5,10 @@ controls the existing host over trusted Wi-Fi. The computer retains rules,
 legal moves, Stockfish, inventory, routing, checkpoints and the sole Uno serial
 connection. No Uno firmware changes are required.
 
+For the proposed device screens and host API extensions for daily-game
+browsing and recorded replay, see [PocketMage and Chess.com](POCKETMAGE_CHESSCOM.md).
+The current Chess.com controls are available in the host browser GUI.
+
 ## Enable the listener
 
 ```bash

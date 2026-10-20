@@ -221,6 +221,7 @@ cython_debug/
 **/node_modules/
 /computer/runs/
 *.session.lock
+*.replay.json
 
 # Private contributor guidance, fabrication sources, and local artifacts.
 /AGENTS.md

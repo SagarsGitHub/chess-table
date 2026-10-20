@@ -170,6 +170,72 @@ h1 { font-family: Georgia, Cambria, serif; font-size: clamp(35px, 4vw, 55px); li
 .promotion-token { width: 52px; height: 52px; margin: 0 auto 5px; }
 .promotion-choice small { font-size: 11px; font-weight: 700; }
 
+.chesscom-panel { margin-top: 24px; }
+.chesscom-body { padding: 0 25px 23px; }
+.chesscom-intro { margin: 0 0 18px; color: #64746b; font-size: 13px; line-height: 1.5; }
+.chesscom-tabs { display: flex; flex-wrap: wrap; gap: 5px; border-bottom: 1px solid #e2e8de; margin-bottom: 20px; }
+.chesscom-tabs button { border: 0; border-bottom: 3px solid transparent; padding: 10px 14px 12px; background: transparent; color: #74847b; font-size: 13px; font-weight: 750; }
+.chesscom-tabs button[aria-pressed="true"] { border-color: #bc793f; color: #294b42; }
+.chesscom-tabs button:hover { background: #f5f6f0; }
+.chesscom-search { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 15px; }
+.chesscom-search > div { flex: 1 1 160px; }
+.chesscom-search .chesscom-account-field { flex: 0 1 260px; }
+.chesscom-search .chesscom-query-field { flex: 2 1 220px; }
+.chesscom-search .select { margin: 0; min-height: 42px; }
+.chesscom-search input { min-width: 0; font: inherit; font-size: 13px; }
+.chesscom-search .button { width: auto; min-height: 42px; padding: 11px 18px; }
+.chesscom-status { margin: 4px 0 14px; color: #64746b; font-size: 12px; line-height: 1.5; }
+.chesscom-error { border: 1px solid #e6b7a8; border-radius: 7px; background: #fff9f5; color: #914c3a; margin: 0 0 15px; padding: 10px 13px; font-size: 12px; line-height: 1.5; }
+.chesscom-library { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(0, 2fr); gap: 22px; align-items: start; }
+.chesscom-games { display: grid; align-content: start; gap: 7px; max-height: 520px; overflow-y: auto; }
+.chesscom-game { display: grid; gap: 5px; width: 100%; padding: 13px 14px; text-align: left; border: 1px solid #e2e8de; border-radius: 8px; background: #fafbf7; color: #335348; }
+.chesscom-game strong { font-size: 13px; font-weight: 750; line-height: 1.4; }
+.chesscom-game span { font-size: 11px; color: #6d8073; line-height: 1.4; overflow-wrap: anywhere; }
+.chesscom-game small { color: #899786; font-size: 10px; line-height: 1.4; }
+.chesscom-game:hover { background: #edf2e9; }
+.chesscom-game.is-selected { border-color: #739785; box-shadow: inset 3px 0 #527867; background: #edf3e9; }
+.chesscom-game:disabled { opacity: .65; }
+.chesscom-empty-list, .chesscom-empty-preview { padding: 20px; color: #86917f; font-size: 13px; line-height: 1.6; background: #f8f9f4; border: 1px dashed #dfe5d7; border-radius: 8px; }
+.chesscom-empty-list { margin: 0; }
+.chesscom-empty-preview { min-height: 180px; display: grid; place-items: center; text-align: center; }
+.chesscom-preview { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(200px, 1fr); gap: 22px; }
+.chesscom-board { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); grid-template-rows: repeat(8, minmax(0, 1fr)); aspect-ratio: 1; border: 5px solid #25403f; border-radius: 3px; overflow: hidden; }
+.chesscom-board .square-coordinate { left: 2px; bottom: 1px; font-size: 8px; }
+.chesscom-board .piece-token { box-shadow: none; }
+.chesscom-position-controls { display: flex; gap: 10px; justify-content: space-between; align-items: center; margin-top: 9px; }
+.chesscom-position-controls .button { padding: 6px 14px; }
+.chesscom-position-controls span { color: #64786b; font-size: 11px; font-weight: 700; }
+.chesscom-preview-caption { margin: 8px 0 0; color: #88977f; font-size: 10px; text-align: center; }
+.chesscom-game-detail { min-width: 0; }
+.chesscom-game-detail h3 { font-family: Georgia, Cambria, serif; font-size: 23px; line-height: 1.25; font-weight: 600; margin: 0 0 10px; color: #2a463d; }
+.chesscom-players { font-size: 12px; font-weight: 700; line-height: 1.5; color: #4a6858; margin: 0 0 5px; }
+.chesscom-meta { font-size: 11px; color: #83917e; margin: 0 0 10px; line-height: 1.5; }
+.chesscom-link { color: #986537; font-size: 12px; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.chesscom-reason { color: #6b7d6b; font-size: 12px; line-height: 1.5; margin: 15px 0 10px; }
+.chesscom-moves { display: flex; flex-wrap: wrap; align-content: start; gap: 4px; max-height: 125px; overflow-y: auto; border-top: 1px solid #e5ebdf; border-bottom: 1px solid #e5ebdf; padding: 9px 0; }
+.chesscom-moves p { margin: 0; font-size: 11px; color: #8d9a84; }
+.chesscom-move { font-size: 11px; border: 0; border-radius: 4px; background: #f0f3e9; color: #506b58; padding: 4px 5px; }
+.chesscom-move[aria-pressed="true"] { background: #557b65; color: #fff; }
+.chesscom-move:disabled { cursor: default; opacity: .7; }
+.chesscom-replay-controls { display: grid; gap: 9px; margin-top: 15px; }
+.chesscom-confirm { display: flex; gap: 8px; align-items: flex-start; color: #61735e; font-size: 11px; line-height: 1.5; cursor: pointer; }
+.chesscom-confirm input { flex: none; margin: 2px 0 0; width: 15px; height: 15px; accent-color: #567760; }
+.chesscom-replay-controls .button { font-size: 12px; padding: 11px 12px; }
+.chesscom-replay-status { color: #73846c; font-size: 11px; line-height: 1.5; margin: 0; }
+.chesscom-follow-status, .chesscom-automation-status { display: flex; justify-content: space-between; align-items: center; gap: 16px; border: 1px solid #d7e4d2; background: #f3f7ee; border-radius: 8px; padding: 12px 15px; margin-bottom: 15px; }
+.chesscom-follow-status strong { color: #426448; font-size: 12px; }
+.chesscom-follow-status p, .chesscom-automation-status p { margin: 4px 0 0; font-size: 11px; line-height: 1.5; color: #647b5d; }
+.chesscom-follow-status .button, .chesscom-automation-status .button { flex: none; width: auto; padding: 10px 13px; font-size: 11px; }
+.chesscom-daily-controls { display: grid; gap: 11px; margin-top: 15px; }
+.chesscom-daily-controls > p, .chesscom-autoplay-controls > p { margin: 0; color: #73846c; font-size: 11px; line-height: 1.5; }
+.chesscom-daily-controls .button { font-size: 12px; padding: 12px; }
+.chesscom-autoplay-controls { border-top: 1px solid #e5ebdf; padding-top: 12px; margin-top: 2px; }
+.chesscom-autoplay-controls .field-label { font-size: 9px; margin-bottom: 6px; }
+.chesscom-autoplay-row { display: flex; gap: 7px; margin-bottom: 8px; }
+.chesscom-autoplay-row .select { flex: 0 0 76px; width: 76px; font: inherit; font-size: 12px; padding: 9px 8px; margin: 0; }
+.chesscom-autoplay-row .button { flex: 1 1 auto; }
+.chesscom-disclosure { margin: 21px 0 0; padding-top: 15px; border-top: 1px solid #edf0e9; color: #89967f; font-size: 11px; line-height: 1.5; }
+
 @media (max-width: 1080px) {
   .workspace { grid-template-columns: minmax(0, 1.2fr) minmax(290px, .8fr); gap: 16px; }
   .main { padding: 32px 18px 60px; }
@@ -181,12 +247,17 @@ h1 { font-family: Georgia, Cambria, serif; font-size: clamp(35px, 4vw, 55px); li
   .session-status, .transfer-status, .session-start, .session-live, .connection-detail, .setup-details, .small-note, .history-list, .recovery-detail, .recovery-action, .recovery-instruction, .inspection-check, .recovery-options { margin-left: 18px; margin-right: 18px; }
   .parking-map { width: calc(100% - 36px); }
   .parking-orientation { margin-left: 18px; margin-right: 18px; }
+  .chesscom-body { padding: 0 18px 20px; }
+  .chesscom-preview { grid-template-columns: minmax(180px, 1fr) minmax(150px, 1fr); gap: 15px; }
 }
 @media (max-width: 790px) {
   .workspace { grid-template-columns: 1fr; }
   .sidebar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .recovery-panel { grid-column: 1 / -1; }
   .board { max-width: 630px; }
+  .chesscom-library { grid-template-columns: minmax(170px, .7fr) minmax(0, 1fr); gap: 15px; }
+  .chesscom-preview { grid-template-columns: 1fr; }
+  .chesscom-preview-board-wrap { max-width: 330px; width: 100%; margin: 0 auto; }
 }
 @media (max-width: 560px) {
   .topbar { min-height: 68px; }
@@ -212,6 +283,14 @@ h1 { font-family: Georgia, Cambria, serif; font-size: clamp(35px, 4vw, 55px); li
   .square-rank { top: 1px; bottom: auto; }
   .stand-in { width: 9px; height: 9px; right: 1px; bottom: 1px; }
   .parking-slot small { font-size: 7px; right: 2px; bottom: 1px; }
+  .chesscom-panel .panel-heading { align-items: flex-start; }
+  .chesscom-panel .phase-tag { font-size: 9px; padding: 5px 8px; }
+  .chesscom-tabs button { font-size: 11px; padding: 9px 8px; }
+  .chesscom-library { grid-template-columns: 1fr; }
+  .chesscom-games { max-height: 240px; }
+  .chesscom-search > div, .chesscom-search .chesscom-account-field { flex: 1 1 100%; }
+  .chesscom-search .button { width: 100%; }
+  .chesscom-follow-status, .chesscom-automation-status { flex-direction: column; align-items: stretch; gap: 9px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .button { transition: none; }

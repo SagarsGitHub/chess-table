@@ -158,6 +158,79 @@
           </section>
         </aside>
       </div>
+      <section class="panel chesscom-panel" aria-labelledby="chesscom-heading">
+        <div class="panel-heading">
+          <div><p class="section-kicker">05 / DISCOVER &amp; REPLAY</p><h2 id="chesscom-heading">Chess.com library</h2></div>
+          <span class="phase-tag">Public game data</span>
+        </div>
+        <div class="chesscom-body">
+          <p class="chesscom-intro">Browse daily games, find a finished game, or replay a classic. Choosing a game only updates this preview; table controls below start physical motion.</p>
+          <div class="chesscom-tabs" role="group" aria-label="Game library">
+            <button type="button" data-chesscom-kind="daily" aria-pressed="false">My daily games</button>
+            <button type="button" data-chesscom-kind="finished" aria-pressed="false">Finished games</button>
+            <button type="button" data-chesscom-kind="historical" aria-pressed="true">Historic games</button>
+          </div>
+          <form id="chesscom-account-form" class="chesscom-search" hidden>
+            <div class="chesscom-account-field"><label for="chesscom-username" class="field-label">Chess.com username</label><input id="chesscom-username" class="select" type="text" value="ofroni" maxlength="50" autocomplete="off" spellcheck="false" required></div>
+            <button id="chesscom-load" class="button button-secondary" type="submit">Load daily games</button>
+          </form>
+          <form id="chesscom-search-form" class="chesscom-search">
+            <div id="chesscom-month-field" hidden><label for="chesscom-month" class="field-label">Archive month</label><select id="chesscom-month" class="select" disabled><option value="">Load an account's archives first</option></select></div>
+            <div class="chesscom-query-field"><label id="chesscom-query-label" for="chesscom-query" class="field-label">Find a classic</label><input id="chesscom-query" class="select" type="search" placeholder="Player, event, or game title" autocomplete="off"></div>
+            <button id="chesscom-search" class="button button-secondary" type="submit">Search classics</button>
+          </form>
+          <p id="chesscom-status" class="chesscom-status" role="status" aria-live="polite">Loading the historic game collection…</p>
+          <p id="chesscom-error" class="chesscom-error" role="alert" hidden></p>
+          <div id="chesscom-follow-status" class="chesscom-follow-status" hidden>
+            <div><strong id="chesscom-follow-title">Daily game updates</strong><p id="chesscom-daily-status" aria-live="polite"></p><p id="chesscom-daily-times"></p></div>
+            <button id="chesscom-daily-check" class="button button-secondary" type="button" disabled>Check now</button>
+          </div>
+          <div id="chesscom-automation-status" class="chesscom-automation-status" hidden>
+            <p id="chesscom-autoplay-status" aria-live="polite"></p>
+            <button id="chesscom-replay-pause" class="button button-secondary" type="button" disabled>Pause after current move</button>
+          </div>
+          <div class="chesscom-library">
+            <div id="chesscom-games" class="chesscom-games" aria-label="Available games"></div>
+            <div id="chesscom-empty-preview" class="chesscom-empty-preview">Select a game to inspect its position and recorded moves.</div>
+            <div id="chesscom-preview" class="chesscom-preview" hidden>
+              <div class="chesscom-preview-board-wrap">
+                <div id="chesscom-board" class="chesscom-board" role="img" aria-label="Selected game preview"></div>
+                <div class="chesscom-position-controls">
+                  <button id="chesscom-prev" class="button button-subtle" type="button" aria-label="Previous preview position">←</button>
+                  <span id="chesscom-position">Position</span>
+                  <button id="chesscom-forward" class="button button-subtle" type="button" aria-label="Next preview position">→</button>
+                </div>
+                <p class="chesscom-preview-caption">Screen preview · no table motion</p>
+              </div>
+              <div class="chesscom-game-detail">
+                <h3 id="chesscom-title"></h3>
+                <p id="chesscom-players" class="chesscom-players"></p>
+                <p id="chesscom-meta" class="chesscom-meta"></p>
+                <a id="chesscom-link" class="chesscom-link" target="_blank" rel="noopener noreferrer" hidden>Open game source ↗</a>
+                <p id="chesscom-reason" class="chesscom-reason"></p>
+                <div id="chesscom-moves" class="chesscom-moves" aria-label="Recorded moves"></div>
+                <div id="chesscom-daily-controls" class="chesscom-daily-controls" hidden>
+                  <p>This resets the table from its saved position, replays the game's recorded moves automatically, and checks for new recorded moves every 30 minutes while the host is running.</p>
+                  <label class="chesscom-confirm"><input id="chesscom-daily-confirm" type="checkbox"><span>I inspected Expected physical and parking above; the table matches that saved position.</span></label>
+                  <button id="chesscom-daily-switch" class="button button-primary" type="button" disabled>Set table to this game <span aria-hidden="true">→</span></button>
+                </div>
+                <div id="chesscom-replay-controls" class="chesscom-replay-controls" hidden>
+                  <label class="chesscom-confirm"><input id="chesscom-confirm" type="checkbox"><span>I checked the table: all pieces are in the standard starting position and parking is empty.</span></label>
+                  <button id="chesscom-replay-start" class="button button-secondary" type="button" disabled>Confirm board &amp; start replay</button>
+                  <button id="chesscom-replay-next" class="button button-primary" type="button" disabled>Next recorded move <span aria-hidden="true">→</span></button>
+                  <div id="chesscom-autoplay-controls" class="chesscom-autoplay-controls">
+                    <label for="chesscom-wait" class="field-label">Seconds between moves</label>
+                    <div class="chesscom-autoplay-row"><input id="chesscom-wait" class="select" type="number" min="0.1" max="3600" step="0.1" value="2" required><button id="chesscom-replay-autoplay" class="button button-secondary" type="button" disabled>Play recorded game</button></div>
+                    <p>Start the replay above, then play the remaining moves automatically. Pause finishes the current move; Stop motion interrupts it.</p>
+                  </div>
+                  <p id="chesscom-replay-status" class="chesscom-replay-status" aria-live="polite"></p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="chesscom-disclosure">Daily games use recorded moves only, with update checks every 30 minutes while following a game. Chess.com's public API cannot submit moves, and this console does not analyze active daily games. Public game updates may be delayed; routing can pause a replay.</p>
+        </div>
+      </section>
     </main>
   </div>
 

@@ -24,6 +24,9 @@ Uncertain motion requires inspection and reconciliation before another move.
 | `play.py` / `gui.py` / `gui_http.py` | CLI, browser startup and HTTP transport using one `GameRunner`. |
 | `gui_controller.py` | Session/serial ownership, local controls and browser state views. |
 | `gui_worker.py` | Single-worker game/reset loops, engine turns and STOP-aware motion. |
+| `chesscom.py` / `gui_chesscom.py` | Cached read-only PubAPI browsing, validated PGNs and explicitly fenced recorded replay. |
+| `gui_daily.py` / `gui_replay.py` | Confirmed daily reset/switch, 30-minute update checks, and interruptible timed playback. |
+| `replay_guard.py` / `historical_games.json` | Durable replay ownership across restarts and the attributed historical starter library. |
 | `gui_remote.py` | Aina request fences, queue tickets and durable receipt/status views. |
 | `host_runtime.py` | Shared connection setup, geometry, engine selection and checkpoint archival. Entry points retain link ownership. |
 | `gui_snapshot.py` | Synchronized checkpoint reads and browser history/action views; never reads the mutable runner. |
@@ -69,6 +72,15 @@ for trusted-LAN chess control. The separate `.tar` app displays host legal moves
 supports manual, human/Stockfish and Stockfish self-play. Commands share the
 existing worker, ownership fences and checkpoint receipts. Aina remains
 authenticated on loopback. See [the API contract](../docs/POCKETMAGE_CONTROL.md).
+
+## Chess.com
+
+The browser GUI includes `ofroni` daily games, selected-month finished-game
+search, and three bundled historical classics. Daily switch commands reset and
+recreate a selected game, then check for updates every 30 minutes while running.
+Historical games support individual steps and timed autoplay through the same runner.
+PubAPI cannot submit moves. See [the integration guide](../docs/CHESSCOM.md)
+and [PocketMage extension note](../docs/POCKETMAGE_CHESSCOM.md).
 
 ## Checks and limits
 

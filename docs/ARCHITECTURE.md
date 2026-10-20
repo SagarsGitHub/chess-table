@@ -17,6 +17,15 @@ The [module map](../computer/README.md#code-map) lists implementation ownership.
 
 `gui.py` starts listeners; `gui_controller.py` owns the single session, locks and serial connection. Its worker and remote mixins share that state. `host_runtime.py` supplies connection/engine/geometry helpers; `gui_snapshot.py` reads synchronized checkpoints for presentation. Aina validation/session policy lives in `remote_contract.py` and `remote_session.py`; the [authenticated API](REMOTE_AINA.md#local-api-contract) still submits through the same controller and runner.
 
+`chesscom.py` fetches cached public game data and validates PGN mainlines.
+`gui_chesscom.py` separates preview selection from recorded replay.
+`gui_daily.py` resets and recreates selected daily games, then checks for appended
+moves every 30 minutes; `gui_replay.py` implements timed playback and graceful pause.
+All three use the controller's existing worker and durable physical runner.
+`replay_guard.py` retains replay ownership beside the checkpoint across host
+restarts. A completed physical reset creates a new game identity. See the
+[Chess.com integration contract](CHESSCOM.md).
+
 ## Operation order
 
 1. Validate the legal move and any remote identity/position fence.

@@ -22,13 +22,16 @@ from .host_runtime import (
 from .session_lock import SessionLock
 from .gui_remote import RemoteControlMixin, RemoteMoveTicket
 from .gui_worker import GameWorkerMixin
+from .gui_chesscom import ChessComMixin
+from .gui_replay import ChessComPlaybackMixin
+from .gui_daily import ChessComDailyMixin
 from .reset_receipt import settle_reset_receipts
 
 
 MODES = frozenset({"human_engine", "self_play", "manual_both", "external"})
 
 
-class GameController(RemoteControlMixin, GameWorkerMixin):
+class GameController(ChessComMixin, ChessComDailyMixin, ChessComPlaybackMixin, RemoteControlMixin, GameWorkerMixin):
     """One game/checkpoint owner and one possible motion worker.
 
     The method groups share this instance; only this constructor creates locks,
@@ -108,12 +111,20 @@ class GameController(RemoteControlMixin, GameWorkerMixin):
         else:
             self._status = "Ready. Start or resume a game."
         self._error: str | None = None
+        try:
+            self._init_chesscom()
+        except BaseException:
+            self.lock.release()
+            raise
 
     def close(self) -> None:
         with self._guard:
             if self._worker is not None:
                 raise RuntimeError("cannot close the GUI while a carry or game worker is active")
+            self._chesscom_poll_stop.set()
             interrupt = self._interrupt_thread
+        if self._chesscom_poll_thread is not None:
+            self._chesscom_poll_thread.join(timeout=1)
         if interrupt is not None:
             interrupt.join(timeout=5)
         try:
@@ -194,6 +205,7 @@ class GameController(RemoteControlMixin, GameWorkerMixin):
             error = self._error
             human = self._human
             reset_requested = self._reset_requested.is_set()
+            recorded_replay = self._chesscom_bound(state)
         # Derive controls from both the saved transfer and live worker. An
         # in-flight checkpoint is normal while its worker still owns the carry;
         # once that worker ends, the same checkpoint requires inspection.
@@ -219,9 +231,9 @@ class GameController(RemoteControlMixin, GameWorkerMixin):
             phase = "error"
         else:
             phase = "idle"
-        can_move = (not cached and phase == "human_turn" and state.pending is None and
+        can_move = (not recorded_replay and not cached and phase == "human_turn" and state.pending is None and
                     state.reset is None and state.source_kind is None)
-        can_start = (not cached and not busy and not uncertain and state.reset is None and
+        can_start = (not recorded_replay and not cached and not busy and not uncertain and state.reset is None and
                      not game_over and state.source_kind is None)
         if cached:
             status = "Checkpoint update in progress; waiting for the saved file."
@@ -300,6 +312,9 @@ class GameController(RemoteControlMixin, GameWorkerMixin):
     def stop(self) -> None:
         """Request a safe pause, issuing serial STOP when motion may be active."""
         with self._guard:
+            if self._chesscom_daily is not None:
+                self._chesscom_daily["paused"] = True
+                self._chesscom_daily["status"] = "Daily following paused by STOP; select Set table to resume explicitly."
             if self._worker is None:
                 return
             already_stopping = self._stop.is_set()
@@ -376,6 +391,9 @@ class GameController(RemoteControlMixin, GameWorkerMixin):
             self._status = "Checkpoint reconciled. Resume the game or board reset."
 
     def reset_board(self) -> None:
+        with self._guard:
+            if self._chesscom_daily is not None:
+                self._chesscom_daily["paused"] = True
         state = self._load_checkpoint()
         if state.pending is not None:
             raise ApiError("finish or reconcile the pending chess move before resetting")
@@ -391,6 +409,8 @@ class GameController(RemoteControlMixin, GameWorkerMixin):
         would leave the checkpoint between legal chess positions.
         """
         with self._guard:
+            if self._chesscom_daily is not None:
+                self._chesscom_daily["paused"] = True
             if self._worker is not None:
                 if self._mode is None:
                     raise ApiError("board reset is already running")

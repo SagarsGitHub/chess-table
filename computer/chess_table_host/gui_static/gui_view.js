@@ -3,6 +3,7 @@
 import {
   PIECE_NAMES, PROMOTION_NAMES, FILES, els, ui, prettyError, parseFen,
   legalMoves, canMove, activeOperation, physicalView, needsReconciliation,
+  chesscomPositions, chesscomPlayer,
 } from "./gui_model.js";
 
 // Keep high-frequency polling from rebuilding the board, parking, and history
@@ -11,10 +12,13 @@ let previousBoardSignature = "";
 let previousRecoverySignature = "";
 let previousHistorySignature = "";
 let previousParkingSignature = "";
+let previousChesscomListSignature = "";
+let previousChesscomPreviewSignature = "";
 
 export function render() {
   renderConnection();
   renderNotice();
+  renderChesscom();
   if (!ui.state) return;
   renderBoardView();
   renderBoard();
@@ -39,7 +43,8 @@ function renderConnection() {
     ? "Pause the simulated game after its current transfer."
     : "Stop an active physical carry immediately; an interrupted carry needs inspection and reconciliation.";
   els["stop-button"].classList.toggle("is-simulation", Boolean(ui.state?.simulated));
-  els["stop-button"].disabled = !ui.online || !ui.state || !ui.state.can_stop;
+  const followingDaily = Boolean(ui.chesscom.daily?.active && !ui.chesscom.daily?.paused);
+  els["stop-button"].disabled = !ui.online || !ui.state || ui.stopInFlight || !(ui.state.can_stop || ui.state.busy || followingDaily);
 }
 
 function renderNotice() {
@@ -88,12 +93,14 @@ export function renderStatus() {
       : canMove() ? (ui.selected ? `Choose a destination for ${ui.selected}.` : "Select a piece, then a highlighted destination.")
       : phase === "ending_game" ? "Finishing the current move before returning pieces to setup."
       : phase === "engine_thinking" ? "Stockfish is choosing a move." : phase === "moving" || ui.state.busy
-        ? "The physical move is in progress." : "Moves are available when it is your turn.";
+        ? "The physical move is in progress." : ui.chesscom.daily?.active
+          ? ui.chesscom.daily.paused ? "Daily updates are paused. See the Chess.com library below." : "Following a daily game · checking recorded moves every 30 minutes."
+          : ui.chesscom.replay?.active ? "Use the recorded replay controls in the Chess.com library below." : "Moves are available when it is your turn.";
 }
 
 function boardSignature() {
   return JSON.stringify([ui.state.board_fen, ui.state.physical_squares, ui.state.moves?.at(-1), ui.state.legal_moves,
-    ui.state.can_move, ui.state.busy, ui.state.phase, ui.whiteAtBottom, physicalView(), ui.selected, ui.online, ui.commandInFlight]);
+    ui.state.can_move, ui.state.busy, ui.state.phase, ui.whiteAtBottom, physicalView(), ui.selected, ui.online, ui.commandInFlight, ui.stopInFlight]);
 }
 
 function pieceDescription(symbol) {
@@ -199,6 +206,7 @@ export function renderBoardView() {
 }
 
 function modeLabel(mode, human) {
+  if (mode === "recorded_replay") return "Recorded game replay";
   if (mode === "self_play") return "Stockfish vs Stockfish";
   if (mode === "manual_both") return "Manual · both sides";
   if (mode === "human_white" || (mode === "human_engine" && human === "white")) return "You · White";
@@ -207,17 +215,18 @@ function modeLabel(mode, human) {
 }
 
 function renderSession() {
-  const canStart = typeof ui.state.can_start === "boolean" ? ui.state.can_start : !ui.state.mode;
+  const replayActive = Boolean(ui.chesscom.replay?.active || ui.chesscom.daily?.active);
+  const canStart = !replayActive && (typeof ui.state.can_start === "boolean" ? ui.state.can_start : !ui.state.mode);
   els["session-start"].hidden = !canStart;
-  els["session-live"].hidden = !ui.state.mode && !(ui.state.moves?.length || ui.state.pending || ui.state.reset);
-  els["start-button"].disabled = !ui.online || ui.commandInFlight || !canStart || ui.state.busy || needsReconciliation();
-  els["active-mode"].textContent = modeLabel(ui.state.mode, ui.state.human);
+  els["session-live"].hidden = !replayActive && !ui.state.mode && !(ui.state.moves?.length || ui.state.pending || ui.state.reset);
+  els["start-button"].disabled = !ui.online || ui.commandInFlight || ui.stopInFlight || !canStart || ui.state.busy || needsReconciliation();
+  els["active-mode"].textContent = ui.chesscom.daily?.active ? "Following daily game" : replayActive ? "Recorded game replay" : modeLabel(ui.state.mode, ui.state.human);
   els["move-count"].textContent = `${Array.isArray(ui.state.moves) ? ui.state.moves.length : 0} plies`;
   els["reset-button"].textContent = ui.state.reset ? "Continue board reset"
     : ui.state.reset_requested ? "Finishing move, then resetting…"
       : ui.state.busy && ui.state.mode ? "End game & reset board" : "Reset board for new game";
   const canReset = ui.state.reset ? ui.state.can_reset : ui.state.can_end_and_reset;
-  els["reset-button"].disabled = !ui.online || ui.commandInFlight || !canReset;
+  els["reset-button"].disabled = !ui.online || ui.commandInFlight || ui.stopInFlight || !canReset;
   const details = [];
   if (ui.state.simulated) details.push("Simulation · no motors move");
   else details.push("Physical controller");
@@ -434,7 +443,7 @@ export function renderRecovery() {
   sourceButton.textContent = isOffset ? (action.direction === "OUT" ? "Piece at center" : "Piece at corner")
     : isOffsetCarry ? "Rook at corner" : "Piece at source";
   destinationButton.textContent = isOffset ? (action.direction === "OUT" ? "Piece at corner" : "Piece at center") : "Piece at destination";
-  const disabled = !els.inspected.checked || ui.commandInFlight || !ui.online || ui.state.busy;
+  const disabled = !els.inspected.checked || ui.commandInFlight || ui.stopInFlight || !ui.online || ui.state.busy;
   for (const button of els["recovery-panel"].querySelectorAll("[data-outcome]")) button.disabled = disabled;
 }
 
@@ -463,4 +472,174 @@ export function closePromotionDialog() {
   els["promotion-dialog"].hidden = true;
   ui.promotionMoves = [];
   els.board.querySelector("button:not(:disabled)")?.focus();
+}
+
+function chesscomTitle(game) {
+  return game.title || `${chesscomPlayer(game.white)} vs ${chesscomPlayer(game.black)}`;
+}
+
+function chesscomMetadata(game) {
+  return [game.event, game.date, game.result && game.result !== "*" ? game.result : "In progress"].filter(Boolean).join(" · ");
+}
+
+function chesscomTime(value) {
+  if (!value) return "";
+  const date = new Date(typeof value === "number" ? (value < 1e12 ? value * 1000 : value) : value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+export function renderChesscom() {
+  const library = ui.chesscom;
+  const isDaily = library.kind === "daily";
+  const isFinished = library.kind === "finished";
+  const unavailable = library.loading || ui.commandInFlight || ui.stopInFlight || !ui.online;
+  const motionUnavailable = unavailable || Boolean(ui.state?.busy) || needsReconciliation();
+  const replay = library.replay || {};
+  const daily = library.daily || {};
+  for (const button of document.querySelectorAll("[data-chesscom-kind]")) {
+    button.setAttribute("aria-pressed", String(button.dataset.chesscomKind === library.kind));
+  }
+  els["chesscom-account-form"].hidden = library.kind === "historical";
+  els["chesscom-search-form"].hidden = isDaily;
+  els["chesscom-month-field"].hidden = !isFinished;
+  els["chesscom-load"].textContent = isFinished ? "Load archive months" : "Load daily games";
+  els["chesscom-load"].disabled = unavailable;
+  els["chesscom-query-label"].textContent = isFinished ? "Find in this month" : "Find a classic";
+  els["chesscom-search"].textContent = isFinished ? "Find finished games" : "Search classics";
+  els["chesscom-search"].disabled = unavailable || (isFinished && !els["chesscom-month"].value);
+  els["chesscom-month"].disabled = unavailable || !library.archives.length;
+  els["chesscom-status"].textContent = library.loading ? "Loading game data…" : library.status;
+  els["chesscom-error"].hidden = !library.error;
+  els["chesscom-error"].textContent = library.error;
+  els["chesscom-follow-status"].hidden = !daily.active;
+  els["chesscom-follow-title"].textContent = daily.title || (daily.game_id ? "Following daily game" : "Daily game updates");
+  els["chesscom-daily-status"].textContent = daily.status || "Checking the followed game every 30 minutes while the host is running.";
+  const checked = chesscomTime(daily.last_checked_at);
+  const nextCheck = chesscomTime(daily.next_check_at);
+  els["chesscom-daily-times"].textContent = [checked ? `Last checked ${checked}` : "", nextCheck ? `Next check ${nextCheck}` : ""].filter(Boolean).join(" · ");
+  els["chesscom-daily-check"].disabled = motionUnavailable || !daily.can_check;
+  els["chesscom-automation-status"].hidden = !replay.autoplay && !replay.can_pause;
+  els["chesscom-autoplay-status"].textContent = replay.autoplay
+    ? `Recorded game is playing automatically · ${replay.wait_seconds ?? 2} seconds between moves. ${replay.status || ""}`
+    : replay.status || "Automatic replay is finishing its current move.";
+  els["chesscom-replay-pause"].disabled = unavailable || !replay.can_pause;
+
+  const games = library.games[library.kind];
+  const listSignature = JSON.stringify([library.kind, games, library.loaded[library.kind], library.selection?.id, library.selectionKind]);
+  if (listSignature !== previousChesscomListSignature) {
+    previousChesscomListSignature = listSignature;
+    const fragment = document.createDocumentFragment();
+    if (!games.length) {
+      const empty = document.createElement("p");
+      empty.className = "chesscom-empty-list";
+      empty.textContent = library.loaded[library.kind] ? "No matching games found." : isDaily ? "Load an account's daily games to begin." : isFinished ? "Load an account's archive months, then search a month." : "The historic collection will appear here.";
+      fragment.append(empty);
+    }
+    for (const game of games) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chesscom-game";
+      button.dataset.chesscomGame = game.id;
+      const selected = library.selection?.id === game.id && library.selectionKind === library.kind;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-pressed", String(selected));
+      const title = document.createElement("strong");
+      title.textContent = chesscomTitle(game);
+      const details = document.createElement("span");
+      details.textContent = `${chesscomPlayer(game.white)} · ${chesscomPlayer(game.black)}`;
+      const meta = document.createElement("small");
+      meta.textContent = chesscomMetadata(game);
+      button.append(title, details, meta);
+      fragment.append(button);
+    }
+    els["chesscom-games"].replaceChildren(fragment);
+  }
+  for (const button of els["chesscom-games"].querySelectorAll("button")) button.disabled = unavailable;
+
+  const game = library.selection;
+  els["chesscom-empty-preview"].hidden = Boolean(game);
+  els["chesscom-preview"].hidden = !game;
+  if (!game) return;
+  const positions = chesscomPositions(game);
+  const ply = Math.max(0, Math.min(library.previewPly ?? 0, Math.max(0, positions.length - 1)));
+  const fen = positions[ply] || game.fen || game.initial_fen || "";
+  const previewSignature = JSON.stringify([game, library.selectionKind, ply, fen]);
+  if (previewSignature !== previousChesscomPreviewSignature) {
+    previousChesscomPreviewSignature = previewSignature;
+    els["chesscom-title"].textContent = chesscomTitle(game);
+    els["chesscom-players"].textContent = `White: ${chesscomPlayer(game.white)} · Black: ${chesscomPlayer(game.black)}`;
+    els["chesscom-meta"].textContent = chesscomMetadata(game);
+    const source = String(game.url || "");
+    const safeSource = /^https:\/\//i.test(source);
+    els["chesscom-link"].hidden = !safeSource;
+    if (safeSource) els["chesscom-link"].href = source;
+    else els["chesscom-link"].removeAttribute("href");
+    els["chesscom-reason"].textContent = game.replay_supported
+      ? library.selectionKind === "daily" ? "Recorded moves only. Daily game updates may be delayed; this does not send moves to Chess.com." : "Recorded moves validated. Table routing is checked before each move and may pause replay."
+      : game.unsupported_reason || "This game is available as a preview; recorded replay is unavailable.";
+    const board = document.createDocumentFragment();
+    const pieces = parseFen(fen);
+    const descriptions = [];
+    for (let rank = 8; rank >= 1; rank--) {
+      for (let file = 0; file < 8; file++) {
+        const square = `${FILES[file]}${rank}`;
+        const symbol = pieces[square];
+        const cell = document.createElement("span");
+        cell.className = `square ${(file + rank) % 2 ? "dark" : "light"}`;
+        cell.setAttribute("aria-hidden", "true");
+        if (symbol) {
+          cell.append(pieceToken(symbol));
+          descriptions.push(`${square} ${pieceDescription(symbol)}`);
+        }
+        if (file === 0 || rank === 1) {
+          const coordinate = document.createElement("span");
+          coordinate.className = "square-coordinate";
+          coordinate.textContent = `${file === 0 ? rank : ""}${rank === 1 ? FILES[file] : ""}`;
+          cell.append(coordinate);
+        }
+        board.append(cell);
+      }
+    }
+    els["chesscom-board"].replaceChildren(board);
+    els["chesscom-board"].setAttribute("aria-label", `Screen preview, ${positions.length ? `after ${ply} recorded plies` : "latest available position"}, white at bottom: ${descriptions.join(", ") || "position unavailable"}`);
+    els["chesscom-position"].textContent = positions.length ? `Ply ${ply} / ${positions.length - 1}` : "Latest position";
+    const moves = Array.isArray(game.moves) ? game.moves : [];
+    const san = Array.isArray(game.moves_san) && game.moves_san.length === moves.length ? game.moves_san : moves;
+    const moveList = document.createDocumentFragment();
+    if (!moves.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "No recorded move list is available.";
+      moveList.append(empty);
+    }
+    for (let index = 0; index < moves.length; index++) {
+      const move = document.createElement("button");
+      move.type = "button";
+      move.className = "chesscom-move";
+      move.dataset.chesscomPly = String(index + 1);
+      move.disabled = index + 1 >= positions.length;
+      move.textContent = `${index % 2 === 0 ? `${Math.floor(index / 2) + 1}. ` : ""}${san[index]}`;
+      move.title = `${moves[index]} · preview position`;
+      move.setAttribute("aria-pressed", String(ply === index + 1));
+      moveList.append(move);
+    }
+    els["chesscom-moves"].replaceChildren(moveList);
+  }
+  els["chesscom-prev"].disabled = ply <= 0 || !positions.length;
+  els["chesscom-forward"].disabled = ply >= positions.length - 1;
+  const selectedDaily = library.selectionKind === "daily";
+  els["chesscom-daily-controls"].hidden = !selectedDaily || !game.replay_supported;
+  els["chesscom-daily-confirm"].disabled = motionUnavailable || !daily.can_switch;
+  els["chesscom-daily-switch"].disabled = motionUnavailable || !daily.can_switch || !els["chesscom-daily-confirm"].checked || !library.selectionToken;
+  els["chesscom-replay-controls"].hidden = !game.replay_supported || selectedDaily;
+  els["chesscom-confirm"].disabled = motionUnavailable || !replay.can_start;
+  els["chesscom-replay-start"].disabled = motionUnavailable || !replay.can_start || !els["chesscom-confirm"].checked || !library.selectionToken;
+  els["chesscom-replay-next"].disabled = motionUnavailable || !replay.can_next || replay.autoplay;
+  const waitValid = els["chesscom-wait"].checkValidity();
+  els["chesscom-wait"].disabled = Boolean(replay.autoplay);
+  els["chesscom-replay-autoplay"].disabled = motionUnavailable || !replay.can_next || replay.autoplay || !waitValid;
+  const matchingReplay = replay.active && replay.selection_token === library.selectionToken;
+  const replayComplete = matchingReplay && Number(replay.index || 0) >= Number(replay.total || 0);
+  els["chesscom-replay-next"].textContent = replayComplete ? "Recorded replay complete"
+    : matchingReplay ? `Next recorded move (${Number(replay.index || 0) + 1} / ${replay.total || "?"}) →` : "Next recorded move →";
+  els["chesscom-replay-status"].textContent = replay.status || (replay.active ? `Table replay: ${replay.index || 0} of ${replay.total || 0} plies completed.` : "Confirm the starting setup, then request each recorded move explicitly.");
 }

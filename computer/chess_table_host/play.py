@@ -26,6 +26,7 @@ from .planner import (
 from .routing import RouteError, RouteGeometry
 from .serial_link import LinkError, open_serial
 from .session_lock import SessionLock
+from .replay_guard import read_replay_marker
 from .host_config import DEFAULT_CONFIG, _load_config
 from .host_runtime import (
     connect_physical, _archive_checkpoint, _feasible_engine_moves, _geometry_from_file,
@@ -478,6 +479,15 @@ def _main(argv: list[str] | None = None) -> int:
             state = store.load()
         except (GameStateError, OSError, ValueError) as exc:
             parser.error(f"could not load state file {args.state}: {exc}")
+    try:
+        replay_marker = read_replay_marker(args.state)
+    except (GameStateError, OSError) as exc:
+        parser.error(f"could not load replay ownership marker: {exc}")
+    if (replay_marker and replay_marker["host_game_id"] == state.host_game_id and
+            not args.reset_board):
+        parser.error(
+            "checkpoint belongs to a recorded replay; inspect/recover and reset through host GUI before ordinary play"
+        )
     if args.reset_board and state.pending is not None:
         parser.error("resolve or finish the pending chess move before --reset-board")
     if not args.reset_board and state.reset is not None:

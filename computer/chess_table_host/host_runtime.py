@@ -97,16 +97,32 @@ def _archive_checkpoint(path: Path) -> Path:
     for attempt in range(1000):
         suffix = "" if attempt == 0 else f"-{attempt:03d}"
         archive = path.with_name(f"{path.stem}.before-reset-{stamp}{suffix}{path.suffix}")
+        source_marker = path.with_name(path.stem + ".replay.json")
+        archive_marker = archive.with_name(archive.stem + ".replay.json")
+        created = False
+        marker_created = False
         try:
             with path.open("rb") as original, archive.open("xb") as copy:
+                created = True
                 shutil.copyfileobj(original, copy)
                 copy.flush()
                 os.fsync(copy.fileno())
+            if source_marker.exists():
+                with source_marker.open("rb") as original, archive_marker.open("xb") as copy:
+                    marker_created = True
+                    shutil.copyfileobj(original, copy)
+                    copy.flush()
+                    os.fsync(copy.fileno())
             return archive
         except FileExistsError:
+            if created:
+                archive.unlink(missing_ok=True)
             continue
         except BaseException:
-            archive.unlink(missing_ok=True)
+            if created:
+                archive.unlink(missing_ok=True)
+            if marker_created:
+                archive_marker.unlink(missing_ok=True)
             raise
     raise GameStateError("could not find a free checkpoint archive filename")
 

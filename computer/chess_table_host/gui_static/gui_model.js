@@ -16,6 +16,19 @@ export const els = Object.fromEntries([
   "transfer-status", "transfer-progress", "transfer-action", "transfer-route",
   "history", "history-count", "recovery-panel", "recovery-detail", "recovery-action",
   "inspected", "promotion-dialog", "promotion-options", "promotion-cancel", "setup-summary",
+  "chesscom-account-form", "chesscom-username", "chesscom-load", "chesscom-search-form",
+  "chesscom-month-field", "chesscom-month", "chesscom-query", "chesscom-query-label",
+  "chesscom-search", "chesscom-status", "chesscom-error", "chesscom-games",
+  "chesscom-empty-preview", "chesscom-preview", "chesscom-board", "chesscom-prev",
+  "chesscom-forward", "chesscom-position", "chesscom-title", "chesscom-players",
+  "chesscom-meta", "chesscom-link", "chesscom-reason", "chesscom-moves",
+  "chesscom-replay-controls", "chesscom-confirm", "chesscom-replay-start",
+  "chesscom-replay-next", "chesscom-replay-status",
+  "chesscom-daily-controls", "chesscom-daily-confirm", "chesscom-daily-switch",
+  "chesscom-follow-status", "chesscom-follow-title", "chesscom-daily-status",
+  "chesscom-daily-times", "chesscom-daily-check", "chesscom-autoplay-controls",
+  "chesscom-wait", "chesscom-replay-autoplay", "chesscom-automation-status",
+  "chesscom-autoplay-status", "chesscom-replay-pause",
 ].map(id => [id, document.getElementById(id)]));
 
 export const ui = {
@@ -26,10 +39,38 @@ export const ui = {
   whiteAtBottom: true,
   viewOverride: null,
   commandInFlight: false,
+  stopInFlight: false,
   online: false,
   localError: "",
   promotionMoves: [],
+  chesscom: {
+    kind: "historical",
+    username: "ofroni",
+    games: { daily: [], finished: [], historical: [] },
+    loaded: { daily: false, finished: false, historical: false },
+    archives: [],
+    archiveUsername: null,
+    contexts: {},
+    selection: null,
+    selectionKind: null,
+    selectionToken: null,
+    replay: null,
+    daily: null,
+    previewPly: null,
+    loading: false,
+    error: "",
+    status: "Loading the historic game collection…",
+  },
 };
+
+export function chesscomPositions(game = ui.chesscom.selection) {
+  return Array.isArray(game?.positions) ? game.positions.filter(fen => typeof fen === "string") : [];
+}
+
+export function chesscomPlayer(player) {
+  if (typeof player === "string") return player;
+  return String(player?.username || player?.name || "Unknown player");
+}
 
 export function prettyError(value) {
   if (typeof value === "string") return value;
@@ -63,7 +104,7 @@ export function legalMoves() {
 }
 
 export function canMove() {
-  if (!ui.state || !ui.online || ui.commandInFlight || needsReconciliation()) return false;
+  if (!ui.state || !ui.online || ui.commandInFlight || ui.stopInFlight || ui.chesscom.replay?.active || ui.chesscom.daily?.active || needsReconciliation()) return false;
   if (typeof ui.state.can_move === "boolean") return ui.state.can_move;
   return ui.state.phase === "human_turn" || ui.state.phase === "manual_turn";
 }
